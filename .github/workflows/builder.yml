@@ -16,8 +16,6 @@ jobs:
             optimized: 'windows-cuda-1241'
           - cuda_version: '12.2.0'
             optimized: 'windows-cuda-1220'
-    outputs:
-      llama-tag: ${{ steps.extract-tag.outputs.tag }}
     steps:
       - name: Clone node-llama-cpp repository
         uses: actions/checkout@v4
@@ -61,8 +59,10 @@ jobs:
           npx zx -y <<'EOF'
           #!/usr/bin/env zx
           
-          // Find build directory
-          const buildDirs = await glob('./llama/localBuilds/win-x64-release-*', { onlyDirectories: true });
+          const localBuildsDirectoryPath = path.join(process.cwd(), "llama", "localBuilds");
+          
+          // Find win-x64 directory in localBuilds
+          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
           
           if (buildDirs.length === 0) {
             console.error('Build directory not found');
@@ -70,38 +70,31 @@ jobs:
           }
           
           const buildDir = buildDirs[0];
-          const buildDirName = path.basename(buildDir);
-          const releasePath = path.join(buildDir, 'Release');
-          
-          console.log(`Found build directory: ${buildDirName}`);
+          console.log(`Found build directory: ${buildDir}`);
           
           // Check if Release directory exists
-          if (!await fs.pathExists(releasePath)) {
-            console.error(`Release directory not found at: ${releasePath}`);
+          const releasePath = path.join(buildDir, 'Release');
+          console.log(`Checking Release directory: ${releasePath}`);
+          
+          if (!(await fs.pathExists(releasePath))) {
+            console.error('Release directory not found');
             process.exit(1);
           }
           
-          console.log(`Release directory confirmed at: ${releasePath}`);
+          // Create bins directory similar to node-llama-cpp logic
+          const llamaBinsDirectoryPath = path.join(process.cwd(), "bins");
+          await fs.ensureDir(llamaBinsDirectoryPath);
+          
+          // Get folder name from build directory
+          const folderName = path.basename(buildDir);
+          console.log(`Moving Release contents from ${releasePath} to bins/${folderName}`);
+          
+          // Move Release directory content to bins/folderName
+          await fs.move(releasePath, path.join(llamaBinsDirectoryPath, folderName));
           
           // Set environment variables
-          await $`echo "BUILD_DIR_NAME=${buildDirName}" >> ${process.env.GITHUB_ENV}`;
-          await $`echo "RELEASE_PATH=${releasePath}" >> ${process.env.GITHUB_ENV}`;
-          EOF
-          
-      - name: Extract llama.cpp tag from build directory
-        id: extract-tag
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          
-          const buildDirName = process.env.BUILD_DIR_NAME;
-          const tag = buildDirName.replace('win-x64-release-', '');
-          
-          console.log(`Extracted llama.cpp tag: ${tag}`);
-          
-          await $`echo "tag=${tag}" >> ${process.env.GITHUB_OUTPUT}`;
-          await $`echo "LLAMA_TAG=${tag}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "BINS_PATH=${llamaBinsDirectoryPath}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "FOLDER_NAME=${folderName}" >> ${process.env.GITHUB_ENV}`;
           EOF
           
       - name: Create tar.gz archive
@@ -111,13 +104,15 @@ jobs:
           #!/usr/bin/env zx
           
           const archiveName = '${{ matrix.optimized }}.tar.gz';
-          const releasePath = process.env.RELEASE_PATH;
+          const binsPath = process.env.BINS_PATH;
+          const folderName = process.env.FOLDER_NAME;
+          const targetPath = path.join(binsPath, folderName);
           
           console.log(`Creating archive: ${archiveName}`);
-          console.log(`From directory: ${releasePath}`);
+          console.log(`From directory: ${targetPath}`);
           
-          // Create tar.gz archive
-          await $`tar -czf ${archiveName} -C ${releasePath} .`;
+          // Create tar.gz archive from the specific folder in bins
+          await $`tar -czf ${archiveName} -C ${targetPath} .`;
           
           console.log(`Archive created successfully: ${archiveName}`);
           
@@ -132,8 +127,6 @@ jobs:
           
   windows-no-cuda:
     runs-on: windows-2019
-    outputs:
-      llama-tag: ${{ steps.extract-tag.outputs.tag }}
     steps:
       - name: Clone node-llama-cpp repository
         uses: actions/checkout@v4
@@ -169,8 +162,10 @@ jobs:
           npx zx -y <<'EOF'
           #!/usr/bin/env zx
           
-          // Find build directory
-          const buildDirs = await glob('./llama/localBuilds/win-x64-release-*', { onlyDirectories: true });
+          const localBuildsDirectoryPath = path.join(process.cwd(), "llama", "localBuilds");
+          
+          // Find win-x64 directory in localBuilds
+          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
           
           if (buildDirs.length === 0) {
             console.error('Build directory not found');
@@ -178,38 +173,31 @@ jobs:
           }
           
           const buildDir = buildDirs[0];
-          const buildDirName = path.basename(buildDir);
-          const releasePath = path.join(buildDir, 'Release');
-          
-          console.log(`Found build directory: ${buildDirName}`);
+          console.log(`Found build directory: ${buildDir}`);
           
           // Check if Release directory exists
-          if (!await fs.pathExists(releasePath)) {
-            console.error(`Release directory not found at: ${releasePath}`);
+          const releasePath = path.join(buildDir, 'Release');
+          console.log(`Checking Release directory: ${releasePath}`);
+          
+          if (!(await fs.pathExists(releasePath))) {
+            console.error('Release directory not found');
             process.exit(1);
           }
           
-          console.log(`Release directory confirmed at: ${releasePath}`);
+          // Create bins directory similar to node-llama-cpp logic
+          const llamaBinsDirectoryPath = path.join(process.cwd(), "bins");
+          await fs.ensureDir(llamaBinsDirectoryPath);
+          
+          // Get folder name from build directory
+          const folderName = path.basename(buildDir);
+          console.log(`Moving Release contents from ${releasePath} to bins/${folderName}`);
+          
+          // Move Release directory content to bins/folderName
+          await fs.move(releasePath, path.join(llamaBinsDirectoryPath, folderName));
           
           // Set environment variables
-          await $`echo "BUILD_DIR_NAME=${buildDirName}" >> ${process.env.GITHUB_ENV}`;
-          await $`echo "RELEASE_PATH=${releasePath}" >> ${process.env.GITHUB_ENV}`;
-          EOF
-          
-      - name: Extract llama.cpp tag from build directory
-        id: extract-tag
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          
-          const buildDirName = process.env.BUILD_DIR_NAME;
-          const tag = buildDirName.replace('win-x64-release-', '');
-          
-          console.log(`Extracted llama.cpp tag: ${tag}`);
-          
-          await $`echo "tag=${tag}" >> ${process.env.GITHUB_OUTPUT}`;
-          await $`echo "LLAMA_TAG=${tag}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "BINS_PATH=${llamaBinsDirectoryPath}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "FOLDER_NAME=${folderName}" >> ${process.env.GITHUB_ENV}`;
           EOF
           
       - name: Create tar.gz archive
@@ -219,13 +207,15 @@ jobs:
           #!/usr/bin/env zx
           
           const archiveName = 'windows-no-cuda.tar.gz';
-          const releasePath = process.env.RELEASE_PATH;
+          const binsPath = process.env.BINS_PATH;
+          const folderName = process.env.FOLDER_NAME;
+          const targetPath = path.join(binsPath, folderName);
           
           console.log(`Creating archive: ${archiveName}`);
-          console.log(`From directory: ${releasePath}`);
+          console.log(`From directory: ${targetPath}`);
           
-          // Create tar.gz archive
-          await $`tar -czf ${archiveName} -C ${releasePath} .`;
+          // Create tar.gz archive from the specific folder in bins
+          await $`tar -czf ${archiveName} -C ${targetPath} .`;
           
           console.log(`Archive created successfully: ${archiveName}`);
           
@@ -250,26 +240,18 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
         
-      - name: Get llama.cpp tag
-        id: llama-tag
-        run: |
-          # 從 windows-cuda job 獲取 llama tag（所有 job 應該使用相同版本）
-          LLAMA_TAG="${{ needs.windows-cuda.outputs.llama-tag }}"
-          echo "Using llama.cpp tag: $LLAMA_TAG"
-          echo "tag=$LLAMA_TAG" >> $GITHUB_OUTPUT
-          
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
         
-      - name: Create llama.cpp Tagged Release
+      - name: Create timestamped Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
         with:
-          tag_name: llama-${{ steps.llama-tag.outputs.tag }}
-          name: node-llama-cpp builds (llama.cpp ${{ steps.llama-tag.outputs.tag }})
+          tag_name: build-${{ steps.date.outputs.date }}
+          name: node-llama-cpp builds (${{ steps.date.outputs.date }})
           body: |
-            node-llama-cpp addon builds based on llama.cpp ${{ steps.llama-tag.outputs.tag }}
+            node-llama-cpp addon builds
             Build date: ${{ steps.date.outputs.date }}
             
             **Available builds:**
@@ -295,7 +277,6 @@ jobs:
           name: Latest node-llama-cpp builds
           body: |
             Latest node-llama-cpp addon builds.
-            Based on llama.cpp: ${{ steps.llama-tag.outputs.tag }}
             Last updated: ${{ steps.date.outputs.date }}
             
             **Available builds:**
