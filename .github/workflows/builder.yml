@@ -85,45 +85,25 @@ jobs:
           const llamaBinsDirectoryPath = path.join(process.cwd(), "bins");
           await fs.ensureDir(llamaBinsDirectoryPath);
           
-          // Get folder name from build directory
-          const folderName = path.basename(buildDir);
-          console.log(`Moving Release contents from ${releasePath} to bins/${folderName}`);
+          await fs.copy(releasePath, llamaBinsDirectoryPath, { overwrite: true });
           
-          // Move Release directory content to bins/folderName
-          await fs.move(releasePath, path.join(llamaBinsDirectoryPath, folderName));
-          
-          // Set environment variables
-          await $`echo "BINS_PATH=${llamaBinsDirectoryPath}" >> ${process.env.GITHUB_ENV}`;
-          await $`echo "FOLDER_NAME=${folderName}" >> ${process.env.GITHUB_ENV}`;
           EOF
+          mkdir -p artifacts
           
       - name: Create tar.gz archive
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          
-          const archiveName = '${{ matrix.optimized }}.tar.gz';
-          const binsPath = process.env.BINS_PATH;
-          const folderName = process.env.FOLDER_NAME;
-          const targetPath = path.join(binsPath, folderName);
-          
-          console.log(`Creating archive: ${archiveName}`);
-          console.log(`From directory: ${targetPath}`);
-          
-          // Create tar.gz archive from the specific folder in bins
-          await $`tar -czf ${archiveName} -C ${targetPath} .`;
-          
-          console.log(`Archive created successfully: ${archiveName}`);
-          
-          await $`echo "ARCHIVE_NAME=${archiveName}" >> ${process.env.GITHUB_ENV}`;
-          EOF
-          
-      - name: Upload artifacts
+        uses: a7ul/tar-action@v1.1.0
+        id: compress
+        with:
+          command: c
+          cwd: bins
+          files: |
+            ./
+          outPath: artifacts/${{ matrix.optimized }}.tar.gz
+     - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.optimized }}
-          path: ${{ env.ARCHIVE_NAME }}
+          name: ${{ matrix.optimized }}.tar.gz
+          path: artifacts/${{ matrix.optimized }}.tar.gz
           
   windows-no-cuda:
     runs-on: windows-2019
@@ -188,45 +168,25 @@ jobs:
           const llamaBinsDirectoryPath = path.join(process.cwd(), "bins");
           await fs.ensureDir(llamaBinsDirectoryPath);
           
-          // Get folder name from build directory
-          const folderName = path.basename(buildDir);
-          console.log(`Moving Release contents from ${releasePath} to bins/${folderName}`);
-          
           // Move Release directory content to bins/folderName
-          await fs.move(releasePath, path.join(llamaBinsDirectoryPath, folderName));
+          await fs.copy(releasePath, llamaBinsDirectoryPath, { overwrite: true });
           
-          // Set environment variables
-          await $`echo "BINS_PATH=${llamaBinsDirectoryPath}" >> ${process.env.GITHUB_ENV}`;
-          await $`echo "FOLDER_NAME=${folderName}" >> ${process.env.GITHUB_ENV}`;
           EOF
-          
+          mkdir -p artifacts
       - name: Create tar.gz archive
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          
-          const archiveName = 'windows-no-cuda.tar.gz';
-          const binsPath = process.env.BINS_PATH;
-          const folderName = process.env.FOLDER_NAME;
-          const targetPath = path.join(binsPath, folderName);
-          
-          console.log(`Creating archive: ${archiveName}`);
-          console.log(`From directory: ${targetPath}`);
-          
-          // Create tar.gz archive from the specific folder in bins
-          await $`tar -czf ${archiveName} -C ${targetPath} .`;
-          
-          console.log(`Archive created successfully: ${archiveName}`);
-          
-          await $`echo "ARCHIVE_NAME=${archiveName}" >> ${process.env.GITHUB_ENV}`;
-          EOF
-          
-      - name: Upload artifacts
+        uses: a7ul/tar-action@v1.1.0
+        id: compress
+        with:
+          command: c
+          cwd: bins
+          files: |
+            ./
+          outPath: artifacts/${{ matrix.optimized }}.tar.gz
+     - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-no-cuda
-          path: ${{ env.ARCHIVE_NAME }}
+          name: ${{ matrix.optimized }}.tar.gz
+          path: artifacts/${{ matrix.optimized }}.tar.gz
 
   create-update-release:
     needs: [windows-cuda, windows-no-cuda]
