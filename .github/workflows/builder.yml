@@ -37,6 +37,7 @@ jobs:
         run: |
           choco install cmake -y
           npm install -g cmake-js
+          npm install tar
           
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.22
@@ -55,75 +56,73 @@ jobs:
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Find build directory and package
-        shell: powershell
+        shell: bash
         run: |
-          $buildDir = Get-ChildItem -Path "./llama/localBuilds" -Directory | Where-Object { $_.Name -like "win-x64-release-*" } | Select-Object -First 1
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          if ($null -eq $buildDir) {
-            Write-Error "Build directory not found"
-            exit 1
+          // Find build directory
+          const buildDirs = await glob('./llama/localBuilds/win-x64-release-*', { onlyDirectories: true });
+          
+          if (buildDirs.length === 0) {
+            console.error('Build directory not found');
+            process.exit(1);
           }
           
-          Write-Host "Found build directory: $($buildDir.Name)"
+          const buildDir = buildDirs[0];
+          const buildDirName = path.basename(buildDir);
+          const releasePath = path.join(buildDir, 'Release');
           
-          echo "BUILD_DIR_NAME=$($buildDir.Name)" >> $env:GITHUB_ENV
-          echo "RELEASE_PATH=$($buildDir.FullName)/Release" >> $env:GITHUB_ENV
+          console.log(`Found build directory: ${buildDirName}`);
           
-          $releasePath = Join-Path $buildDir.FullName "Release"
-          if (!(Test-Path $releasePath)) {
-            Write-Error "Release directory not found at: $releasePath"
-            exit 1
+          // Check if Release directory exists
+          if (!await fs.pathExists(releasePath)) {
+            console.error(`Release directory not found at: ${releasePath}`);
+            process.exit(1);
           }
           
-          Write-Host "Release directory confirmed at: $releasePath"
+          console.log(`Release directory confirmed at: ${releasePath}`);
+          
+          // Set environment variables
+          await $`echo "BUILD_DIR_NAME=${buildDirName}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "RELEASE_PATH=${releasePath}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Extract llama.cpp tag from build directory
         id: extract-tag
-        shell: powershell
+        shell: bash
         run: |
-          $buildDirName = $env:BUILD_DIR_NAME
-          $tag = $buildDirName -replace "win-x64-release-", ""
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          Write-Host "Extracted llama.cpp tag: $tag"
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "LLAMA_TAG=$tag" >> $env:GITHUB_ENV
+          const buildDirName = process.env.BUILD_DIR_NAME;
+          const tag = buildDirName.replace('win-x64-release-', '');
+          
+          console.log(`Extracted llama.cpp tag: ${tag}`);
+          
+          await $`echo "tag=${tag}" >> ${process.env.GITHUB_OUTPUT}`;
+          await $`echo "LLAMA_TAG=${tag}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Create tar.gz archive
-        shell: powershell
+        shell: bash
         run: |
-          choco install 7zip -y
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          $archiveName = "${{ matrix.optimized }}.tar.gz"
-          $releasePath = $env:RELEASE_PATH
+          const archiveName = '${{ matrix.optimized }}.tar.gz';
+          const releasePath = process.env.RELEASE_PATH;
           
-          Write-Host "Creating archive: $archiveName"
-          Write-Host "From directory: $releasePath"
+          console.log(`Creating archive: ${archiveName}`);
+          console.log(`From directory: ${releasePath}`);
           
-          Push-Location $releasePath
+          // Create tar.gz archive
+          await $`tar -czf ${archiveName} -C ${releasePath} .`;
           
-          try {
-            & "C:\Program Files\7-Zip\7z.exe" a -ttar temp.tar *
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to create tar file"
-              exit 1
-            }
-            
-            & "C:\Program Files\7-Zip\7z.exe" a -tgzip "$archiveName" temp.tar
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to create gzip file"
-              exit 1
-            }
-            
-            Move-Item $archiveName $env:GITHUB_WORKSPACE\
-            
-            Remove-Item temp.tar -ErrorAction SilentlyContinue
-            
-          } finally {
-            Pop-Location
-          }
+          console.log(`Archive created successfully: ${archiveName}`);
           
-          Write-Host "Archive created successfully: $archiveName"
-          echo "ARCHIVE_NAME=$archiveName" >> $env:GITHUB_ENV
+          await $`echo "ARCHIVE_NAME=${archiveName}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -154,6 +153,7 @@ jobs:
         run: |
           choco install cmake -y
           npm install -g cmake-js
+          npm install tar
 
       - name: Build
         shell: powershell
@@ -164,75 +164,73 @@ jobs:
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
       - name: Find build directory and package
-        shell: powershell
+        shell: bash
         run: |
-          $buildDir = Get-ChildItem -Path "./llama/localBuilds" -Directory | Where-Object { $_.Name -like "win-x64-release-*" } | Select-Object -First 1
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          if ($null -eq $buildDir) {
-            Write-Error "Build directory not found"
-            exit 1
+          // Find build directory
+          const buildDirs = await glob('./llama/localBuilds/win-x64-release-*', { onlyDirectories: true });
+          
+          if (buildDirs.length === 0) {
+            console.error('Build directory not found');
+            process.exit(1);
           }
           
-          Write-Host "Found build directory: $($buildDir.Name)"
+          const buildDir = buildDirs[0];
+          const buildDirName = path.basename(buildDir);
+          const releasePath = path.join(buildDir, 'Release');
           
-          echo "BUILD_DIR_NAME=$($buildDir.Name)" >> $env:GITHUB_ENV
-          echo "RELEASE_PATH=$($buildDir.FullName)/Release" >> $env:GITHUB_ENV
+          console.log(`Found build directory: ${buildDirName}`);
           
-          $releasePath = Join-Path $buildDir.FullName "Release"
-          if (!(Test-Path $releasePath)) {
-            Write-Error "Release directory not found at: $releasePath"
-            exit 1
+          // Check if Release directory exists
+          if (!await fs.pathExists(releasePath)) {
+            console.error(`Release directory not found at: ${releasePath}`);
+            process.exit(1);
           }
           
-          Write-Host "Release directory confirmed at: $releasePath"
+          console.log(`Release directory confirmed at: ${releasePath}`);
+          
+          // Set environment variables
+          await $`echo "BUILD_DIR_NAME=${buildDirName}" >> ${process.env.GITHUB_ENV}`;
+          await $`echo "RELEASE_PATH=${releasePath}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Extract llama.cpp tag from build directory
         id: extract-tag
-        shell: powershell
+        shell: bash
         run: |
-          $buildDirName = $env:BUILD_DIR_NAME
-          $tag = $buildDirName -replace "win-x64-release-", ""
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          Write-Host "Extracted llama.cpp tag: $tag"
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "LLAMA_TAG=$tag" >> $env:GITHUB_ENV
+          const buildDirName = process.env.BUILD_DIR_NAME;
+          const tag = buildDirName.replace('win-x64-release-', '');
+          
+          console.log(`Extracted llama.cpp tag: ${tag}`);
+          
+          await $`echo "tag=${tag}" >> ${process.env.GITHUB_OUTPUT}`;
+          await $`echo "LLAMA_TAG=${tag}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Create tar.gz archive
-        shell: powershell
+        shell: bash
         run: |
-          choco install 7zip -y
+          npx zx -y <<'EOF'
+          #!/usr/bin/env zx
           
-          $archiveName = "windows-no-cuda.tar.gz"
-          $releasePath = $env:RELEASE_PATH
+          const archiveName = 'windows-no-cuda.tar.gz';
+          const releasePath = process.env.RELEASE_PATH;
           
-          Write-Host "Creating archive: $archiveName"
-          Write-Host "From directory: $releasePath"
+          console.log(`Creating archive: ${archiveName}`);
+          console.log(`From directory: ${releasePath}`);
           
-          Push-Location $releasePath
+          // Create tar.gz archive
+          await $`tar -czf ${archiveName} -C ${releasePath} .`;
           
-          try {
-            & "C:\Program Files\7-Zip\7z.exe" a -ttar temp.tar *
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to create tar file"
-              exit 1
-            }
-            
-            & "C:\Program Files\7-Zip\7z.exe" a -tgzip "$archiveName" temp.tar
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to create gzip file"
-              exit 1
-            }
-            
-            Move-Item $archiveName $env:GITHUB_WORKSPACE\
-            
-            Remove-Item temp.tar -ErrorAction SilentlyContinue
-            
-          } finally {
-            Pop-Location
-          }
+          console.log(`Archive created successfully: ${archiveName}`);
           
-          Write-Host "Archive created successfully: $archiveName"
-          echo "ARCHIVE_NAME=$archiveName" >> $env:GITHUB_ENV
+          await $`echo "ARCHIVE_NAME=${archiveName}" >> ${process.env.GITHUB_ENV}`;
+          EOF
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
