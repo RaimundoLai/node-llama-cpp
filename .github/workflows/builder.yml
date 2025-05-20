@@ -181,12 +181,12 @@ jobs:
           cwd: bins
           files: |
             ./
-          outPath: artifacts/${{ matrix.optimized }}.tar.gz
+          outPath: artifacts/windows-no-cuda.tar.gz
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.optimized }}.tar.gz
-          path: artifacts/${{ matrix.optimized }}.tar.gz
+          name: windows-no-cuda.tar.gz
+          path: artifacts/windows-no-cuda.tar.gz
 
   create-update-release:
     needs: [windows-cuda, windows-no-cuda]
