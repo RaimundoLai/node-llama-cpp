@@ -8,12 +8,14 @@ import {BuildGpu, LlamaLogLevel} from "../../../../bindings/types.js";
 import {getPrettyBuildGpuName} from "../../../../bindings/consts.js";
 import {getModuleVersion} from "../../../../utils/getModuleVersion.js";
 import {withCliCommandDescriptionDocsUrl} from "../../../utils/withCliCommandDescriptionDocsUrl.js";
-import {documentationPageUrls} from "../../../../config.js";
+import {builtinLlamaCppGitHubRepo, documentationPageUrls} from "../../../../config.js";
 import {Llama} from "../../../../bindings/Llama.js";
 import {getPlatformInfo} from "../../../../bindings/utils/getPlatformInfo.js";
 import {getLinuxDistroInfo} from "../../../../bindings/utils/getLinuxDistroInfo.js";
 import {isRunningUnderRosetta} from "../../../utils/isRunningUnderRosetta.js";
 import {toBytes} from "../../../utils/toBytes.js";
+import {getBinariesGithubRelease} from "../../../../bindings/utils/binariesGithubRelease.js";
+import {getClonedLlamaCppRepoReleaseInfo} from "../../../../bindings/utils/cloneLlamaCppRepo.js";
 
 type InspectGpuCommand = {
     // no options for now
@@ -74,8 +76,33 @@ export const InspectGpuCommand: CommandModule<object, InspectGpuCommand> = {
         try {
             const moduleVersion = await getModuleVersion();
 
-            if (moduleVersion != null)
+            if (moduleVersion != null) {
+                console.info();
                 console.info(`${chalk.yellow("node-llama-cpp:")} ${moduleVersion}`);
+            }
+        } catch (err) {
+            // do nothing
+        }
+
+        try {
+            const prebuiltBinariesRelease = await getBinariesGithubRelease();
+
+            console.info(`${chalk.yellow("Prebuilt binaries:")} ${prebuiltBinariesRelease}`);
+        } catch (err) {
+            // do nothing
+        }
+
+        try {
+            const clonedLlamaCppRelease = await getClonedLlamaCppRepoReleaseInfo();
+
+            if (clonedLlamaCppRelease != null)
+                console.info(
+                    `${chalk.yellow("Cloned source:")} ${clonedLlamaCppRelease.tag}` + (
+                        clonedLlamaCppRelease.llamaCppGithubRepo !== builtinLlamaCppGitHubRepo
+                            ? ` (${clonedLlamaCppRelease.llamaCppGithubRepo})`
+                            : ""
+                    )
+                );
         } catch (err) {
             // do nothing
         }
@@ -126,6 +153,9 @@ export const InspectGpuCommand: CommandModule<object, InspectGpuCommand> = {
             } else {
                 console.info(`${chalk.yellow("CUDA:")} ${chalk.green("available")}`);
                 gpusToLogVramUsageOf.push("cuda");
+
+                if (llama._hadErrorLogs)
+                    console.info(chalk.yellow("To resolve errors related to CUDA, see the CUDA guide: ") + documentationPageUrls.CUDA);
             }
         }
 
@@ -138,6 +168,11 @@ export const InspectGpuCommand: CommandModule<object, InspectGpuCommand> = {
             } else {
                 console.info(`${chalk.yellow("Vulkan:")} ${chalk.green("available")}`);
                 gpusToLogVramUsageOf.push("vulkan");
+
+                if (llama._hadErrorLogs)
+                    console.info(
+                        chalk.yellow("To resolve errors related to Vulkan, see the Vulkan guide: ") + documentationPageUrls.Vulkan
+                    );
             }
         }
 
@@ -146,11 +181,11 @@ export const InspectGpuCommand: CommandModule<object, InspectGpuCommand> = {
 
         for (const gpu of gpusToLogVramUsageOf) {
             const llama = gpuToLlama.get(gpu);
-            if (llama == null)
+            if (llama == null || llama.gpu !== gpu)
                 continue;
 
             console.info();
-            await logGpuVramUsage(gpu, llama);
+            await logGpuVramUsage(llama);
         }
 
         console.info();
@@ -181,9 +216,9 @@ async function getLlamaForGpu(gpu: BuildGpu) {
     }
 }
 
-async function logGpuVramUsage(gpu: BuildGpu, llama: Llama) {
+async function logGpuVramUsage(llama: Llama) {
     try {
-        const gpuName = getPrettyBuildGpuName(gpu);
+        const gpuName = getPrettyBuildGpuName(llama.gpu);
         const vramState = await llama.getVramState();
         const gpuDeviceNames = await llama.getGpuDeviceNames();
 

@@ -16,7 +16,7 @@ import {
 } from "./utils/compileLLamaCpp.js";
 import {getLastBuildInfo} from "./utils/lastBuildInfo.js";
 import {getClonedLlamaCppRepoReleaseInfo, isLlamaCppRepoCloned} from "./utils/cloneLlamaCppRepo.js";
-import {BuildGpu, BuildMetadataFile, BuildOptions, LlamaGpuType, LlamaLogLevel} from "./types.js";
+import {BuildGpu, BuildMetadataFile, BuildOptions, LlamaGpuType, LlamaLogLevel, LlamaNuma} from "./types.js";
 import {BinaryPlatform, getPlatform} from "./utils/getPlatform.js";
 import {getBuildFolderNameForBuildOptions} from "./utils/getBuildFolderNameForBuildOptions.js";
 import {resolveCustomCmakeOptions} from "./utils/resolveCustomCmakeOptions.js";
@@ -171,7 +171,27 @@ export type LlamaOptions = {
      *
      * Defaults to `false`.
      */
-    dryRun?: boolean
+    dryRun?: boolean,
+
+    /**
+     * NUMA (Non-Uniform Memory Access) allocation policy.
+     *
+     * On multi-socket or multi-cluster machines, each CPU "socket" (or node) has its own local memory.
+     * Accessing memory on your own socket is fast, but another socket's memory is slower.
+     * Setting a NUMA (Non-Uniform Memory Access) allocation policy can
+     * dramatically improve performance by keeping data local and "close" to the socket.
+     *
+     * These are the available NUMA options:
+     * - **`false`**: Don't set any NUMA policy - let the OS decide.
+     * - **`"distribute"`**: Distribute the memory across all available NUMA nodes.
+     * - **`"isolate"`**: Pin both threads and their memory to a single NUMA node to avoid cross-node traffic.
+     * - **`"numactl"`**: Delegate NUMA management to the external `numactl` command (or `libnuma` library) to set the NUMA policy.
+     * - **`"mirror"`**: Allocate memory on all NUMA nodes, and copy the data to all of them.
+     *     This ensures minimal traffic between nodes, but uses more memory.
+     *
+     * Defaults to `false` (no NUMA policy).
+     */
+    numa?: LlamaNuma
 };
 
 export type LastBuildOptions = {
@@ -261,7 +281,27 @@ export type LastBuildOptions = {
      *
      * Defaults to `false`.
      */
-    dryRun?: boolean
+    dryRun?: boolean,
+
+    /**
+     * NUMA (Non-Uniform Memory Access) allocation policy.
+     *
+     * On multi-socket or multi-cluster machines, each CPU "socket" (or node) has its own local memory.
+     * Accessing memory on your own socket is fast, but another socket's memory is slower.
+     * Setting a NUMA (Non-Uniform Memory Access) allocation policy can
+     * dramatically improve performance by keeping data local and "close" to the socket.
+     *
+     * These are the available NUMA options:
+     * - **`false`**: Don't set any NUMA policy - let the OS decide.
+     * - **`"distribute"`**: Distribute the memory across all available NUMA nodes.
+     * - **`"isolate"`**: Pin both threads and their memory to a single NUMA node to avoid cross-node traffic.
+     * - **`"numactl"`**: Delegate NUMA management to the external `numactl` command (or `libnuma` library) to set the NUMA policy.
+     * - **`"mirror"`**: Allocate memory on all NUMA nodes, and copy the data to all of them.
+     *     This ensures minimal traffic between nodes, but uses more memory.
+     *
+     * Defaults to `false` (no NUMA policy).
+     */
+    numa?: LlamaNuma
 };
 
 export const getLlamaFunctionName = "getLlama";
@@ -319,6 +359,7 @@ export async function getLlama(options?: LlamaOptions | "lastBuild", lastBuildOp
             vramPadding: lastBuildOptions?.vramPadding ?? defaultLlamaVramPadding,
             ramPadding: lastBuildOptions?.ramPadding ?? defaultLlamaRamPadding,
             debug: lastBuildOptions?.debug ?? defaultLlamaCppDebugMode,
+            numa: lastBuildOptions?.numa,
             dryRun
         };
 
@@ -346,6 +387,7 @@ export async function getLlama(options?: LlamaOptions | "lastBuild", lastBuildOp
                     vramPadding: lastBuildOptions?.vramPadding ?? defaultLlamaVramPadding,
                     ramPadding: lastBuildOptions?.ramPadding ?? defaultLlamaRamPadding,
                     debug: lastBuildOptions?.debug ?? defaultLlamaCppDebugMode,
+                    numa: lastBuildOptions?.numa,
                     skipLlamaInit: dryRun
                 });
 
@@ -365,6 +407,7 @@ export async function getLlama(options?: LlamaOptions | "lastBuild", lastBuildOp
     return getLlamaForOptions(options ?? {});
 }
 
+// internal
 export async function getLlamaForOptions({
     gpu = defaultLlamaCppGpuSupport,
     logLevel = defaultLlamaCppLogLevel,
@@ -379,6 +422,7 @@ export async function getLlamaForOptions({
     vramPadding = defaultLlamaVramPadding,
     ramPadding = defaultLlamaRamPadding,
     debug = defaultLlamaCppDebugMode,
+    numa = false,
     dryRun = false
 }: LlamaOptions, {
     updateLastBuildInfoOnCompile = false,
@@ -452,6 +496,7 @@ export async function getLlamaForOptions({
                     vramPadding,
                     ramPadding,
                     debug,
+                    numa,
                     dryRun
                 });
             } catch (err) {
@@ -469,6 +514,7 @@ export async function getLlamaForOptions({
                     vramPadding,
                     ramPadding,
                     debug,
+                    numa,
                     dryRun
                 });
             }
@@ -515,6 +561,7 @@ export async function getLlamaForOptions({
                             : null
                     ),
                 debug,
+                numa,
                 pipeBinaryTestErrorLogs
             });
 
@@ -576,7 +623,8 @@ export async function getLlamaForOptions({
                 vramPadding,
                 ramPadding,
                 skipLlamaInit,
-                debug
+                debug,
+                numa
             });
         } catch (err) {
             console.error(
@@ -621,6 +669,7 @@ async function loadExistingLlamaBinary({
     ramPadding,
     fallbackMessage,
     debug,
+    numa,
     pipeBinaryTestErrorLogs
 }: {
     buildOptions: BuildOptions,
@@ -637,6 +686,7 @@ async function loadExistingLlamaBinary({
     ramPadding: Required<LlamaOptions>["ramPadding"],
     fallbackMessage: string | null,
     debug: boolean,
+    numa?: LlamaNuma,
     pipeBinaryTestErrorLogs: boolean
 }) {
     const buildFolderName = await getBuildFolderNameForBuildOptions(buildOptions);
@@ -656,7 +706,7 @@ async function loadExistingLlamaBinary({
             });
             const resolvedBindingPath = await resolveActualBindingBinaryPath(localBuildBinPath);
             const binaryCompatible = shouldTestBinaryBeforeLoading
-                ? await testBindingBinary(resolvedBindingPath, buildOptions.gpu, undefined, pipeBinaryTestErrorLogs)
+                ? await testBindingBinary(resolvedBindingPath, undefined, buildOptions.gpu, undefined, pipeBinaryTestErrorLogs)
                 : true;
 
             if (binaryCompatible) {
@@ -673,7 +723,8 @@ async function loadExistingLlamaBinary({
                     vramPadding,
                     ramPadding,
                     skipLlamaInit,
-                    debug
+                    debug,
+                    numa
                 });
             } else if (progressLogs) {
                 console.warn(
@@ -714,8 +765,13 @@ async function loadExistingLlamaBinary({
                     buildMetadata
                 });
                 const resolvedBindingPath = await resolveActualBindingBinaryPath(prebuiltBinDetails.binaryPath);
+                const resolvedExtBackendsPath = prebuiltBinDetails.extBackendsPath == null
+                    ? undefined
+                    : await resolveActualBindingBinaryPath(prebuiltBinDetails.extBackendsPath);
                 const binaryCompatible = shouldTestBinaryBeforeLoading
-                    ? await testBindingBinary(resolvedBindingPath, buildOptions.gpu, undefined, pipeBinaryTestErrorLogs)
+                    ? await testBindingBinary(
+                        resolvedBindingPath, resolvedExtBackendsPath, buildOptions.gpu, undefined, pipeBinaryTestErrorLogs
+                    )
                     : true;
 
                 if (binaryCompatible) {
@@ -724,6 +780,7 @@ async function loadExistingLlamaBinary({
                     return await Llama._create({
                         bindings: binding,
                         bindingPath: resolvedBindingPath,
+                        extBackendsPath: resolvedExtBackendsPath,
                         buildType: "prebuilt",
                         buildMetadata,
                         logLevel,
@@ -732,7 +789,8 @@ async function loadExistingLlamaBinary({
                         vramPadding,
                         ramPadding,
                         skipLlamaInit,
-                        debug
+                        debug,
+                        numa
                     });
                 } else if (progressLogs) {
                     const binaryDescription = describeBinary({
@@ -787,7 +845,8 @@ async function buildAndLoadLlamaBinary({
     vramPadding,
     ramPadding,
     skipLlamaInit,
-    debug
+    debug,
+    numa
 }: {
     buildOptions: BuildOptions,
     skipDownload: boolean,
@@ -798,7 +857,8 @@ async function buildAndLoadLlamaBinary({
     vramPadding: Required<LlamaOptions>["vramPadding"],
     ramPadding: Required<LlamaOptions>["ramPadding"],
     skipLlamaInit: boolean,
-    debug: boolean
+    debug: boolean,
+    numa?: LlamaNuma
 }) {
     const buildFolderName = await getBuildFolderNameForBuildOptions(buildOptions);
 
@@ -832,7 +892,8 @@ async function buildAndLoadLlamaBinary({
         vramPadding,
         ramPadding,
         skipLlamaInit,
-        debug
+        debug,
+        numa
     });
 }
 

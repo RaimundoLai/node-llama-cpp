@@ -22,13 +22,14 @@ import {
 import {resolveBatchItemsPrioritizationStrategy} from "./utils/resolveBatchItemsPrioritizationStrategy.js";
 import {LlamaSampler} from "./LlamaSampler.js";
 import {TokenPredictor} from "./TokenPredictor.js";
+import {padSafeContextSize} from "./utils/padSafeContextSize.js";
 import type {Llama} from "../../bindings/Llama.js";
 
 const defaultLoraScale = 1;
 const shrinkRetriesMinContextSize = 4096;
 const defaultMaxPunishTokens = 64;
 const defaultFailedCreationRemedy = {
-    retries: 6,
+    retries: 16,
     autoContextSizeShrink: 0.16
 } as const satisfies Required<LlamaContextOptions["failedCreationRemedy"]>;
 const defaultEvaluationPriority: EvaluationPriority = 5;
@@ -53,6 +54,7 @@ export class LlamaContext {
     /** @internal */ private readonly _totalSequences: number;
     /** @internal */ private readonly _unusedSequenceIds: number[] = [];
     /** @internal */ private readonly _batchingOptions: Required<BatchingOptions>;
+    /** @internal */ private readonly _swaFullCache: boolean = false;
     /** @internal */ private readonly _queuedDecodeSequenceIds = new Set<number>();
     /** @internal */ private readonly _queuedDecodes: InternalQueuedDecode[] = [];
     /** @internal */ private readonly _disposeAggregator = new AsyncDisposeAggregator();
@@ -84,6 +86,7 @@ export class LlamaContext {
             dispatchSchedule: batchingDispatchSchedule = "nextCycle",
             itemPrioritizationStrategy: batchingItemsPrioritizationStrategy = "maximumParallelism"
         } = {},
+        swaFullCache = _model.defaultContextSwaFullCache,
         performanceTracking = false,
         _embeddings,
         _ranking
@@ -96,12 +99,15 @@ export class LlamaContext {
         if (_model.disposed)
             throw new DisposedError();
 
+        const kvUnified = false;
         this._llama = _model._llama;
         this._model = _model;
         this._backendContextDisposeGuard = new DisposeGuard([this._model._backendModelDisposeGuard]);
         this._modelPreventDisposalHandle = this._model._backendModelDisposeGuard.createPreventDisposalHandle();
         this._totalSequences = Math.max(1, Math.floor(sequences));
-        this._contextSize = Math.max(2, contextSize);
+        this._contextSize = kvUnified
+            ? Math.floor(padSafeContextSize(Math.max(2, contextSize) * this._totalSequences, "up") / this._totalSequences)
+            : padSafeContextSize(Math.max(2, contextSize), "up");
         this._batchSize = Math.max(batchSize, this._totalSequences);
         this._flashAttention = flashAttention;
         this._idealThreads = typeof threads === "number"
@@ -120,15 +126,21 @@ export class LlamaContext {
                 : this._llama._threadsSplitter.normalizeThreadsValue(threads?.min ?? 1)
         );
         this._performanceTracking = !!performanceTracking;
+        this._swaFullCache = !!swaFullCache;
         this._ctx = new this._llama._bindings.AddonContext(this._model._model, removeNullFields({
-            contextSize: this._contextSize * this._totalSequences, // each sequence needs its own <contextSize> of cells
-            batchSize: this._batchSize,
+            contextSize: padSafeContextSize(this._contextSize * this._totalSequences, "up"), // each sequence needs its own <contextSize> of cells
+            batchSize: this._batchSize + (
+                (!this._swaFullCache && this.model.fileInsights.swaSize != null && this.model.fileInsights.swaSize > 0)
+                    ? 1 // +1 to handle edge cases with SWA KV cache
+                    : 0
+            ),
             sequences: this._totalSequences,
             flashAttention: this._flashAttention,
             threads: this._idealThreads,
             embeddings: _embeddings,
             ranking: _ranking,
-            performanceTracking: this._performanceTracking
+            performanceTracking: this._performanceTracking,
+            swaFullCache: this._swaFullCache
         }));
         this._batchingOptions = {
             dispatchSchedule: batchingDispatchSchedule,
@@ -307,7 +319,7 @@ export class LlamaContext {
 
         this._batchDispatchPending = true;
 
-        void withLock(this, "context", async () => {
+        void withLock([this as LlamaContext, "context"], async () => {
             this._currentDispatchBatchHandle = {};
             this._dispatchDecodeScheduled = false;
             this._batchDispatchPending = false;
@@ -581,7 +593,7 @@ export class LlamaContext {
                     let decodeLock: Lock | undefined;
                     // this is a workaround to prevent Vulkan from crashing the process when decoding on multiple contexts in parallel
                     if (this._llama.gpu === "vulkan")
-                        decodeLock = await acquireLock(decodeSyncWorkaround.vulkanLock, "decode");
+                        decodeLock = await acquireLock([decodeSyncWorkaround.vulkanLock, "decode"]);
 
                     try {
                         await decodeTokenBatchItems(currentBatchItems, currentBatchSize);
@@ -645,7 +657,7 @@ export class LlamaContext {
         if (this._disposed)
             return;
 
-        void withLock(this, "context", async () => {
+        void withLock([this as LlamaContext, "context"], async () => {
             if (this._disposed)
                 return;
 
@@ -783,6 +795,7 @@ export class LlamaContext {
         const flashAttention = _model.flashAttentionSupported
             ? Boolean(options.flashAttention ?? _model.defaultContextFlashAttention)
             : false;
+        const swaFullCache = options.swaFullCache ?? _model.defaultContextSwaFullCache;
         const loraOptions = typeof options.lora === "string"
             ? {adapters: [{filePath: options.lora}]} satisfies LlamaContextOptions["lora"]
             : options.lora satisfies LlamaContextOptions["lora"];
@@ -799,6 +812,7 @@ export class LlamaContext {
             modelGpuLayers: _model.gpuLayers,
             modelTrainContextSize: _model.trainContextSize,
             flashAttention,
+            swaFullCache,
             getVramState: () => _model._llama._vramOrchestrator.getMemoryState(),
             llamaGpu: _model._llama.gpu,
             ignoreMemorySafetyChecks: options.ignoreMemorySafetyChecks,
@@ -821,10 +835,11 @@ export class LlamaContext {
                 isEmbeddingContext: options._embeddings,
                 modelGpuLayers: _model.gpuLayers,
                 batchSize,
-                flashAttention
+                flashAttention,
+                swaFullCache
             });
 
-            const context = new LlamaContext({_model}, {...options, contextSize, batchSize, sequences, flashAttention});
+            const context = new LlamaContext({_model}, {...options, contextSize, batchSize, sequences, flashAttention, swaFullCache});
             const contextCreationVramReservation = options.ignoreMemorySafetyChecks
                 ? null
                 : _model._llama._vramOrchestrator.reserveMemory(resourceRequirementsEstimation.gpuVram);
@@ -1036,6 +1051,31 @@ export class LlamaContextSequence {
     }
 
     /**
+     * Get the index of the first token in the KV cache.
+     *
+     * If you remove any tokens from the state that come before this index,
+     * no cached prefix tokens evaluation state will be used for the next evaluation.
+     *
+     * For example, if `stateCellsStartIndex` is `10` and you remove the range `{start: 11, end: 16}`
+     * then the cached state for range `0-10` will be used in the next evaluation,
+     * but if you remove the range `{start: 10, end: 16}` (or `{start: 9, end: 16}`) then the cached state will not be used at all
+     * and will be re-evaluated in the next evaluation.
+     *
+     * This index can be greater than `0` only when SWA (Sliding Window Attention) is used (only on supported models).
+     *
+     * When SWA is used, this index will usually be `Math.max(-1, .nextTokenIndex - .model.fileInsights.swaSize)` or larger.
+     *
+     * When the KV cache is empty, this index will be `-1`.
+     *
+     * You can disable SWA by setting the `swaFullCache` option to `true` when creating a context.
+     */
+    public get stateCellsStartIndex() {
+        this._ensureNotDisposed();
+
+        return this._context._ctx.getSequenceKvCacheMinPosition(this._sequenceId);
+    }
+
+    /**
      * Statistics of token predictions using the sequence's `tokenPredictor`.
      *
      * The statistics change only when token prediction is used in this sequence.
@@ -1177,7 +1217,9 @@ export class LlamaContextSequence {
     ) {
         this._ensureNotDisposed();
 
-        await withLock(this._context, "context", async () => {
+        let awaitPromise: Promise<void> | undefined;
+
+        await withLock([this._context, "context"], async () => {
             this._ensureNotDisposed();
 
             if (ranges.length === 0)
@@ -1217,6 +1259,13 @@ export class LlamaContextSequence {
                     ranges.push(range);
                     return ranges;
                 }, [] as ContextTokensDeleteRange[]);
+
+            const minKvCachePosition = (this._contextTokens.length === 0 && this._loadedTokenPredictions.length === 0)
+                ? 0
+                : Math.max(0, this._context._ctx.getSequenceKvCacheMinPosition(this._sequenceId));
+            if (resolvedRanges[0] != null && resolvedRanges[0].start <= minKvCachePosition)
+                // we have to drop the cache and reevaluate the sequence due to missing KV cache
+                deletionSuccessful = false;
 
             const tokenPredictionsToRemove = (resolvedRanges.length > 0 && canRemovePredictionTokens)
                 ? this._loadedTokenPredictions.length
@@ -1273,8 +1322,12 @@ export class LlamaContextSequence {
             this._nextTokenIndex = 0;
             this._context._ctx.disposeSequence(this._sequenceId);
 
-            await this.evaluateWithoutGeneratingNewTokens(newSequenceTokens, {_skipLock: skipLock});
+            // wait for the evaluation outside the "context" lock to avoid deadlocks
+            awaitPromise = this.evaluateWithoutGeneratingNewTokens(newSequenceTokens, {_skipLock: skipLock});
         });
+
+        if (awaitPromise != null)
+            await awaitPromise;
     }
 
     /**
@@ -1506,7 +1559,7 @@ export class LlamaContextSequence {
             return item;
         });
 
-        const evaluatorLock = await acquireLock(this._lock, "evaluate");
+        const evaluatorLock = await acquireLock([this._lock, "evaluate"]);
         try {
             return await this._decodeTokens(
                 resolvedTokens,
@@ -1539,7 +1592,7 @@ export class LlamaContextSequence {
                         tokenBias: sampleOptions.tokenBias
                     });
 
-                    return await withLock(sampler, "sample", async () => {
+                    return await withLock([sampler, "sample"], async () => {
                         if (sampler.disposed)
                             return undefined;
 
@@ -1574,22 +1627,23 @@ export class LlamaContextSequence {
             );
         } finally {
             evaluatorLock.dispose();
-            void withLock(sampler, "sample", sampler.asyncDispose);
+            void withLock([sampler, "sample"], sampler.asyncDispose);
         }
     }
 
+    /* eslint-disable @stylistic/max-len */
     /**
      * Save the current context sequence evaluation state to a file.
-     * @see [Saving and restoring a context sequence evaluation state
-     * ](https://node-llama-cpp.withcat.ai/guide/chat-session#save-and-restore-with-context-sequence-state)
+     * @see [Saving and restoring a context sequence evaluation state](https://node-llama-cpp.withcat.ai/guide/chat-session#save-and-restore-with-context-sequence-state)
      */
     public async saveStateToFile(filePath: string) {
+        /* eslint-enable @stylistic/max-len */
         this._ensureNotDisposed();
 
         const resolvedPath = path.resolve(process.cwd(), filePath);
 
-        const evaluatorLock = await acquireLock(this._lock, "evaluate");
-        const contextLock = await acquireLock(this._context, "context");
+        const evaluatorLock = await acquireLock([this._lock, "evaluate"]);
+        const contextLock = await acquireLock([this._context, "context"]);
 
         try {
             this._ensureNotDisposed();
@@ -1606,14 +1660,14 @@ export class LlamaContextSequence {
         }
     }
 
+    /* eslint-disable @stylistic/max-len */
     /**
      * Load a context sequence evaluation state from a file.
      *
      * Trying to load a state file with a longer context size than the current sequence's context size will fail and throw an error.
      *
      * You must ensure that the file was created from the exact same model, otherwise, using this function may crash the process.
-     * @see [Saving and restoring a context sequence evaluation state
-     * ](https://node-llama-cpp.withcat.ai/guide/chat-session#save-and-restore-with-context-sequence-state)
+     * @see [Saving and restoring a context sequence evaluation state](https://node-llama-cpp.withcat.ai/guide/chat-session#save-and-restore-with-context-sequence-state)
      */
     public async loadStateFromFile(filePath: string, acceptRisk: {
         /**
@@ -1623,6 +1677,7 @@ export class LlamaContextSequence {
          */
         acceptRisk: true
     }) {
+        /* eslint-enable @stylistic/max-len */
         if (!acceptRisk.acceptRisk)
             throw new Error("The `acceptRisk` option must be set to `true` to use this feature");
 
@@ -1630,8 +1685,8 @@ export class LlamaContextSequence {
 
         const resolvedPath = path.resolve(process.cwd(), filePath);
 
-        const evaluatorLock = await acquireLock(this._lock, "evaluate");
-        const contextLock = await acquireLock(this._context, "context");
+        const evaluatorLock = await acquireLock([this._lock, "evaluate"]);
+        const contextLock = await acquireLock([this._context, "context"]);
 
         try {
             this._ensureNotDisposed();
@@ -1706,7 +1761,7 @@ export class LlamaContextSequence {
                 this._ensureNotDisposed();
                 const evaluatorLock = _skipLock
                     ? undefined
-                    : await acquireLock(this._lock, "evaluate");
+                    : await acquireLock([this._lock, "evaluate"]);
                 let nextToken: Token | -1 | null | undefined;
                 const yieldRes: Partial<SequenceEvaluateOutput<{probabilities: true, confidence: true}>> = {};
 
@@ -1738,7 +1793,7 @@ export class LlamaContextSequence {
                                 tokenBias
                             });
 
-                            return withLock(sampler, "sample", async () => {
+                            return withLock([sampler, "sample"], async () => {
                                 if (sampler.disposed)
                                     return null;
 
@@ -1796,7 +1851,7 @@ export class LlamaContextSequence {
                     evalTokens = [nextToken];
             }
         } finally {
-            void withLock(sampler, "sample", sampler.asyncDispose);
+            void withLock([sampler, "sample"], sampler.asyncDispose);
         }
     }
 
@@ -1844,7 +1899,7 @@ export class LlamaContextSequence {
         try {
             while (true) {
                 this._ensureNotDisposed();
-                const evaluatorLock = await acquireLock(this._lock, "evaluate");
+                const evaluatorLock = await acquireLock([this._lock, "evaluate"]);
                 let nextToken: Token | undefined;
                 const yieldRes: Partial<SequenceEvaluateOutput<{probabilities: true, confidence: true}>> = {};
 
@@ -1968,7 +2023,7 @@ export class LlamaContextSequence {
                                     tokenBias
                                 });
 
-                                return withLock(sampler, "sample", async () => {
+                                return withLock([sampler, "sample"], async () => {
                                     if (sampler.disposed)
                                         return null;
 
@@ -2061,7 +2116,7 @@ export class LlamaContextSequence {
                 logitsArray[logitsStartIndex] = true;
             }
         } finally {
-            void withLock(sampler, "sample", sampler.asyncDispose);
+            void withLock([sampler, "sample"], sampler.asyncDispose);
 
             if (this._tokenPredictorOwner === tokenPredictorOwner)
                 tokenPredictor.stop();

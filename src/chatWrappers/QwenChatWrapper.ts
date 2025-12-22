@@ -14,6 +14,7 @@ export class QwenChatWrapper extends ChatWrapper {
 
     public readonly keepOnlyLastThought: boolean;
     public readonly thoughts: "auto" | "discourage";
+    /** @internal */ private readonly _flatFunctionResultString: boolean;
 
     public override readonly settings: ChatWrapperSettings;
 
@@ -35,18 +36,23 @@ export class QwenChatWrapper extends ChatWrapper {
         thoughts?: "auto" | "discourage",
 
         /** @internal */
-        _lineBreakBeforeFunctionCallPrefix?: boolean
+        _lineBreakBeforeFunctionCallPrefix?: boolean,
+
+        /** @internal */
+        _flatFunctionResultString?: boolean
     } = {}) {
         super();
 
         const {
             keepOnlyLastThought = true,
             thoughts = "auto",
-            _lineBreakBeforeFunctionCallPrefix = false
+            _lineBreakBeforeFunctionCallPrefix = false,
+            _flatFunctionResultString = false
         } = options;
 
         this.keepOnlyLastThought = keepOnlyLastThought;
         this.thoughts = thoughts;
+        this._flatFunctionResultString = _flatFunctionResultString;
 
         this.settings = {
             supportsSystemMessages: true,
@@ -84,8 +90,8 @@ export class QwenChatWrapper extends ChatWrapper {
             segments: {
                 reiterateStackAfterFunctionCalls: true,
                 thought: {
-                    prefix: LlamaText(new SpecialTokensText("<think>")),
-                    suffix: LlamaText(new SpecialTokensText("</think>"))
+                    prefix: LlamaText(new SpecialTokensText("<think>\n")),
+                    suffix: LlamaText(new SpecialTokensText("\n</think>"))
                 }
             }
         };
@@ -205,6 +211,13 @@ export class QwenChatWrapper extends ChatWrapper {
         };
     }
 
+    public override generateFunctionCallResult(functionName: string, functionParams: any, result: any) {
+        if (this._flatFunctionResultString && typeof result === "string")
+            return super._generateFunctionCallResult(functionName, functionParams, result);
+
+        return super.generateFunctionCallResult(functionName, functionParams, result);
+    }
+
     public override generateAvailableFunctionsSystemText(availableFunctions: ChatModelFunctions, {documentParams = true}: {
         documentParams?: boolean
     }) {
@@ -239,7 +252,9 @@ export class QwenChatWrapper extends ChatWrapper {
             architecture === GgufArchitectureType.qwen2moe ||
             architecture === GgufArchitectureType.qwen2vl ||
             architecture === GgufArchitectureType.qwen3 ||
-            architecture === GgufArchitectureType.qwen3moe
+            architecture === GgufArchitectureType.qwen3moe ||
+            architecture === GgufArchitectureType.qwen3vl ||
+            architecture === GgufArchitectureType.qwen3vlmoe
         );
     }
 
@@ -247,7 +262,22 @@ export class QwenChatWrapper extends ChatWrapper {
     public static override _getOptionConfigurationsToTestIfCanSupersedeJinjaTemplate(): ChatWrapperJinjaMatchConfiguration<typeof this> {
         return [
             [{}, {}, {_requireFunctionCallSettingsExtraction: true}],
-            [{_lineBreakBeforeFunctionCallPrefix: true}, {}, {_requireFunctionCallSettingsExtraction: true}]
+            [{_lineBreakBeforeFunctionCallPrefix: true}, {}, {_requireFunctionCallSettingsExtraction: true}],
+            [{thoughts: "discourage"}, {}, {_requireFunctionCallSettingsExtraction: true}],
+            [{thoughts: "discourage", _lineBreakBeforeFunctionCallPrefix: true}, {}, {_requireFunctionCallSettingsExtraction: true}],
+
+            [{_flatFunctionResultString: true}, {}, {_requireFunctionCallSettingsExtraction: true}],
+            [
+                {_flatFunctionResultString: true, _lineBreakBeforeFunctionCallPrefix: true},
+                {},
+                {_requireFunctionCallSettingsExtraction: true}
+            ],
+            [{_flatFunctionResultString: true, thoughts: "discourage"}, {}, {_requireFunctionCallSettingsExtraction: true}],
+            [
+                {_flatFunctionResultString: true, thoughts: "discourage", _lineBreakBeforeFunctionCallPrefix: true},
+                {},
+                {_requireFunctionCallSettingsExtraction: true}
+            ]
         ];
     }
 }

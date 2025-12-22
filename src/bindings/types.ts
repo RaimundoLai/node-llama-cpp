@@ -22,6 +22,8 @@ export type BuildOptions = {
         release: string
     }
 };
+export const llamaNumaOptions = ["distribute", "isolate", "numactl", "mirror", false] as const satisfies LlamaNuma[];
+export type LlamaNuma = false | "distribute" | "isolate" | "numactl" | "mirror";
 
 export type BuildOptionsJSON = Omit<BuildOptions, "customCmakeOptions"> & {
     customCmakeOptions: Record<string, string>
@@ -41,6 +43,20 @@ export function parseNodeLlamaCppGpuOption(option: (typeof nodeLlamaCppGpuOption
         return option;
 
     return "auto";
+}
+
+export function parseNumaOption(option: (typeof llamaNumaOptions)[number] | (typeof nodeLlamaCppGpuOffStringOptions)[number]): LlamaNuma {
+    function optionIsGpuOff(opt: typeof option): opt is (typeof nodeLlamaCppGpuOffStringOptions)[number] {
+        return nodeLlamaCppGpuOffStringOptions.includes(opt as (typeof nodeLlamaCppGpuOffStringOptions)[number]);
+    }
+
+    if (optionIsGpuOff(option))
+        return false;
+
+    if (llamaNumaOptions.includes(option))
+        return option;
+
+    return false;
 }
 
 
@@ -87,24 +103,37 @@ export enum LlamaVocabularyType {
     bpe = "bpe",
     wpm = "wpm",
     ugm = "ugm",
-    rwkv = "rwkv"
+    rwkv = "rwkv",
+    plamo2 = "plamo2"
 }
 export const LlamaVocabularyTypeValues = Object.freeze([
     LlamaVocabularyType.none,
     LlamaVocabularyType.spm,
     LlamaVocabularyType.bpe,
-    LlamaVocabularyType.wpm
+    LlamaVocabularyType.wpm,
+    LlamaVocabularyType.ugm,
+    LlamaVocabularyType.rwkv,
+    LlamaVocabularyType.plamo2
 ] as const);
 
 /**
- *Check if a log level is higher than another log level
+ * Check if a log level is higher than another log level
+ * @example
+ * ```ts
+ * LlamaLogLevelGreaterThan(LlamaLogLevel.error, LlamaLogLevel.info); // true
+ * ```
  */
 export function LlamaLogLevelGreaterThan(a: LlamaLogLevel, b: LlamaLogLevel): boolean {
     return LlamaLogLevelValues.indexOf(a) < LlamaLogLevelValues.indexOf(b);
 }
 
 /**
- *Check if a log level is higher than or equal to another log level
+ * Check if a log level is higher than or equal to another log level
+ * @example
+ * ```ts
+ * LlamaLogLevelGreaterThanOrEqual(LlamaLogLevel.error, LlamaLogLevel.info); // true
+ * LlamaLogLevelGreaterThanOrEqual(LlamaLogLevel.error, LlamaLogLevel.error); // true
+ * ```
  */
 export function LlamaLogLevelGreaterThanOrEqual(a: LlamaLogLevel, b: LlamaLogLevel): boolean {
     return LlamaLogLevelValues.indexOf(a) <= LlamaLogLevelValues.indexOf(b);

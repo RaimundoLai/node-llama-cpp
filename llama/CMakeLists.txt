@@ -4,6 +4,8 @@ if (NLC_CURRENT_PLATFORM STREQUAL "win-x64" OR NLC_CURRENT_PLATFORM STREQUAL "wi
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
+include("./cmake/addVariantSuffix.cmake")
+
 if (NLC_CURRENT_PLATFORM STREQUAL "win-x64")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebugDLL" CACHE STRING "" FORCE)
@@ -74,6 +76,21 @@ execute_process(COMMAND node -p "require('node-addon-api').include.slice(1,-1)"
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 include_directories(${NODE_ADDON_API_DIR} ${CMAKE_JS_INC})
 
+if (DEFINED GGML_NATIVE)
+    set(NLC_GGML_NATIVE ${GGML_NATIVE})
+elseif(CMAKE_CROSSCOMPILING OR DEFINED ENV{SOURCE_DATE_EPOCH})
+    set(NLC_GGML_NATIVE OFF)
+else()
+    set(NLC_GGML_NATIVE ON)
+endif()
+
+if (GGML_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT NLC_GGML_NATIVE)
+    find_package(CUDAToolkit)
+    if (CUDAToolkit_FOUND AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL "13.0")
+        set(CMAKE_CUDA_ARCHITECTURES "75-virtual;80-virtual;86-real;89-real;90-real")
+    endif()
+endif()
+
 add_subdirectory("llama.cpp")
 include_directories("llama.cpp")
 include_directories("./llama.cpp/common")
@@ -108,6 +125,9 @@ endif()
 list(REMOVE_DUPLICATES GPU_INFO_HEADERS)
 list(REMOVE_DUPLICATES GPU_INFO_SOURCES)
 list(REMOVE_DUPLICATES GPU_INFO_EXTRA_LIBS)
+
+addVariantSuffix(llama ${NLC_VARIANT})
+addVariantSuffix(ggml ${NLC_VARIANT})
 
 file(GLOB SOURCE_FILES "addon/*.cpp" "addon/**/*.cpp" ${GPU_INFO_SOURCES})
 

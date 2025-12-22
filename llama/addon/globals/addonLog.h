@@ -2,6 +2,7 @@
 #include "llama.h"
 #include "napi.h"
 
+
 struct addon_logger_log {
     public:
         const int logLevelNumber;
@@ -19,3 +20,5 @@ using AddonThreadSafeLogCallbackFunction =
 
 Napi::Value setLogger(const Napi::CallbackInfo& info);
 Napi::Value setLoggerLogLevel(const Napi::CallbackInfo& info);
+
+void addonLog(ggml_log_level level, const std::string text);

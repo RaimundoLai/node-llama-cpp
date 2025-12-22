@@ -28,6 +28,11 @@ export type LlamaContextOptions = {
      * - **`{min?: number, max?: number}`** - adapt to the current VRAM state and attemp to set the context size as high as possible
      * up to the size the model was trained on, but at least `min` and at most `max`.
      *
+     * The actual context size may be slightly larger than your request (by up to 256) due to the implementation in `llama.cpp` that
+     * aligns the context size to multiples of 256 for performance reasons.
+     * To check the actual context size that gets created, use the `.contextSize` property
+     * of the created context instance or any of its sequences.
+     *
      * Defaults to `"auto"`.
      */
     contextSize?: "auto" | number | {
@@ -98,6 +103,22 @@ export type LlamaContextOptions = {
      * See {@link BatchingOptions} for more information.
      */
     batching?: BatchingOptions,
+
+    /**
+     * When using SWA (Sliding Window Attention) on a supported model,
+     * extend the sliding window size to the current context size (meaning practically disabling SWA).
+     *
+     * Enabling this option will consume more memory on models that support SWA (Sliding Window Attention),
+     * but will allow reusing the evaluation cache of any prefix length of the context sequence state
+     * (instead of just the size of the sliding window when SWA is used).
+     *
+     * This option has no effect on models that do not support SWA (Sliding Window Attention).
+     *
+     * > **Note:** you can check the SWA size using `model.fileInsights.swaSize`.
+     *
+     * Defaults to `false` (inherited from the model option `defaultContextSwaFullCache`);
+     */
+    swaFullCache?: boolean,
 
     /**
      * Load the provided LoRA adapters onto the context.

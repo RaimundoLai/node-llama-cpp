@@ -17,6 +17,7 @@ const expectedFileName = "testBindingBinary";
 
 export async function testBindingBinary(
     bindingBinaryPath: string,
+    extBackendsPath: string | undefined,
     gpu: BuildGpu,
     testTimeout: number = 1000 * 60 * 5,
     pipeOutputOnNode: boolean = false
@@ -24,7 +25,7 @@ export async function testBindingBinary(
     if (!detectedFileName.startsWith(expectedFileName)) {
         console.warn(
             getConsoleLogPrefix() +
-            `"${expectedFileName}.js" file is not independent, so testing a binding binary with the current system` +
+            `"${expectedFileName}.js" file is not independent, so testing a binding binary with the current system ` +
             "prior to importing it cannot be done.\n" +
             getConsoleLogPrefix() +
             "Assuming the test passed with the risk that the process may crash due to an incompatible binary.\n" +
@@ -233,6 +234,7 @@ export async function testBindingBinary(
                         subProcess!.sendMessage({
                             type: "start",
                             bindingBinaryPath,
+                            extBackendsPath,
                             gpu
                         });
                     } else if (message.type === "loaded") {
@@ -240,6 +242,7 @@ export async function testBindingBinary(
                         subProcess!.sendMessage({
                             type: "test",
                             bindingBinaryPath,
+                            extBackendsPath,
                             gpu
                         });
                     } else if (message.type === "done") {
@@ -286,9 +289,17 @@ if (process.env.TEST_BINDING_CP === "true" && (process.parentPort != null || pro
                     throw new Error("Binding binary is not loaded");
 
                 binding.loadBackends();
-                const loadedGpu = binding.getGpuType();
-                if (loadedGpu == null || (loadedGpu === false && message.gpu !== false))
-                    binding.loadBackends(path.dirname(path.resolve(message.bindingBinaryPath)));
+                let loadedGpu = binding.getGpuType();
+                if (loadedGpu == null || (loadedGpu === false && message.gpu !== false)) {
+                    const backendsPath = path.dirname(path.resolve(message.bindingBinaryPath));
+                    const fallbackBackendsDir = path.join(path.resolve(message.extBackendsPath ?? backendsPath), "fallback");
+
+                    binding.loadBackends(backendsPath);
+
+                    loadedGpu = binding.getGpuType();
+                    if (loadedGpu == null || (loadedGpu === false && message.gpu !== false))
+                        binding.loadBackends(fallbackBackendsDir);
+                }
 
                 await binding.init();
                 binding.getGpuVramInfo();
@@ -329,10 +340,12 @@ if (process.env.TEST_BINDING_CP === "true" && (process.parentPort != null || pro
 type ParentToChildMessage = {
     type: "start",
     bindingBinaryPath: string,
+    extBackendsPath?: string,
     gpu: BuildGpu
 } | {
     type: "test",
     bindingBinaryPath: string,
+    extBackendsPath?: string,
     gpu: BuildGpu
 } | {
     type: "exit"

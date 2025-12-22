@@ -12,20 +12,32 @@ export async function getLlamaWithoutBackend() {
     if (sharedLlamaWithoutBackend != null)
         return sharedLlamaWithoutBackend;
 
-    return await withLock(getLlamaWithoutBackend, "loadAddon", async () => {
+    return await withLock([getLlamaWithoutBackend, "loadAddon"], async () => {
         if (sharedLlamaWithoutBackend != null)
             return sharedLlamaWithoutBackend;
 
-        sharedLlamaWithoutBackend = await getLlamaForOptions({
-            gpu: false,
-            progressLogs: false,
-            logLevel: LlamaLogLevel.error,
-            build: "never",
-            usePrebuiltBinaries: true,
-            vramPadding: 0
-        }, {
-            skipLlamaInit: true
-        });
+        try {
+            sharedLlamaWithoutBackend = await getLlamaForOptions({
+                gpu: false,
+                progressLogs: false,
+                logLevel: LlamaLogLevel.error,
+                build: "never",
+                usePrebuiltBinaries: true,
+                vramPadding: 0
+            }, {
+                skipLlamaInit: true
+            });
+        } catch (err) {
+            sharedLlamaWithoutBackend = await getLlamaForOptions({
+                progressLogs: false,
+                logLevel: LlamaLogLevel.error,
+                build: "never",
+                usePrebuiltBinaries: true,
+                vramPadding: 0
+            }, {
+                skipLlamaInit: true
+            });
+        }
 
         return sharedLlamaWithoutBackend;
     });

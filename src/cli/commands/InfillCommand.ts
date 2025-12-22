@@ -7,7 +7,8 @@ import fs from "fs-extra";
 import prettyMilliseconds from "pretty-ms";
 import {getLlama} from "../../bindings/getLlama.js";
 import {
-    BuildGpu, LlamaLogLevel, LlamaLogLevelGreaterThan, nodeLlamaCppGpuOptions, parseNodeLlamaCppGpuOption
+    BuildGpu, LlamaLogLevel, LlamaLogLevelGreaterThan, LlamaNuma, llamaNumaOptions, nodeLlamaCppGpuOptions, parseNodeLlamaCppGpuOption,
+    parseNumaOption
 } from "../../bindings/types.js";
 import {LlamaCompletion} from "../../evaluator/LlamaCompletion.js";
 import withOra from "../../utils/withOra.js";
@@ -34,6 +35,7 @@ type InfillCommand = {
     contextSize?: number,
     batchSize?: number,
     flashAttention?: boolean,
+    swaFullCache?: boolean,
     threads?: number,
     temperature: number,
     minP: number,
@@ -50,6 +52,7 @@ type InfillCommand = {
     tokenPredictionDraftModel?: string,
     tokenPredictionModelContextSize?: number,
     debug: boolean,
+    numa?: LlamaNuma,
     meter: boolean,
     timing: boolean,
     noMmap: boolean,
@@ -121,13 +124,19 @@ export const InfillCommand: CommandModule<object, InfillCommand> = {
             .option("batchSize", {
                 alias: "b",
                 type: "number",
-                description: "Batch size to use for the model context. The default value is the context size"
+                description: "Batch size to use for the model context"
             })
             .option("flashAttention", {
                 alias: "fa",
                 type: "boolean",
                 default: false,
                 description: "Enable flash attention"
+            })
+            .option("swaFullCache", {
+                alias: "noSwa",
+                type: "boolean",
+                default: false,
+                description: "Disable SWA (Sliding Window Attention) on supported models"
             })
             .option("threads", {
                 type: "number",
@@ -221,6 +230,20 @@ export const InfillCommand: CommandModule<object, InfillCommand> = {
                 default: false,
                 description: "Print llama.cpp info and debug logs"
             })
+            .option("numa", {
+                type: "string",
+
+                // yargs types don't support passing `false` as a choice, although it is supported by yargs
+                choices: llamaNumaOptions as any as Exclude<typeof llamaNumaOptions[number], false>[],
+                coerce: (value) => {
+                    if (value == null || value == "")
+                        return false;
+
+                    return parseNumaOption(value);
+                },
+                defaultDescription: "false",
+                description: "NUMA allocation policy. See the `numa` option on the `getLlama` method for more information"
+            })
             .option("meter", {
                 type: "boolean",
                 default: false,
@@ -245,17 +268,17 @@ export const InfillCommand: CommandModule<object, InfillCommand> = {
     },
     async handler({
         modelPath, header, gpu, systemInfo, prefix, prefixFile, suffix, suffixFile, contextSize, batchSize,
-        flashAttention, threads, temperature, minP, topK,
+        flashAttention, swaFullCache, threads, temperature, minP, topK,
         topP, seed, gpuLayers, repeatPenalty, lastTokensRepeatPenalty, penalizeRepeatingNewLine,
         repeatFrequencyPenalty, repeatPresencePenalty, maxTokens, tokenPredictionDraftModel, tokenPredictionModelContextSize,
-        debug, meter, timing, noMmap, printTimings
+        debug, numa, meter, timing, noMmap, printTimings
     }) {
         try {
             await RunInfill({
                 modelPath, header, gpu, systemInfo, prefix, prefixFile, suffix, suffixFile, contextSize, batchSize, flashAttention,
-                threads, temperature, minP, topK, topP, seed, gpuLayers, lastTokensRepeatPenalty,
+                swaFullCache, threads, temperature, minP, topK, topP, seed, gpuLayers, lastTokensRepeatPenalty,
                 repeatPenalty, penalizeRepeatingNewLine, repeatFrequencyPenalty, repeatPresencePenalty, maxTokens,
-                tokenPredictionDraftModel, tokenPredictionModelContextSize, debug, meter, timing, noMmap, printTimings
+                tokenPredictionDraftModel, tokenPredictionModelContextSize, debug, numa, meter, timing, noMmap, printTimings
             });
         } catch (err) {
             await new Promise((accept) => setTimeout(accept, 0)); // wait for logs to finish printing
@@ -268,9 +291,9 @@ export const InfillCommand: CommandModule<object, InfillCommand> = {
 
 async function RunInfill({
     modelPath: modelArg, header: headerArg, gpu, systemInfo, prefix, prefixFile, suffix, suffixFile, contextSize, batchSize, flashAttention,
-    threads, temperature, minP, topK, topP, seed, gpuLayers,
+    swaFullCache, threads, temperature, minP, topK, topP, seed, gpuLayers,
     lastTokensRepeatPenalty, repeatPenalty, penalizeRepeatingNewLine, repeatFrequencyPenalty, repeatPresencePenalty,
-    tokenPredictionDraftModel, tokenPredictionModelContextSize, maxTokens, debug, meter, timing, noMmap, printTimings
+    tokenPredictionDraftModel, tokenPredictionModelContextSize, maxTokens, debug, numa, meter, timing, noMmap, printTimings
 }: InfillCommand) {
     if (contextSize === -1) contextSize = undefined;
     if (gpuLayers === -1) gpuLayers = undefined;
@@ -285,22 +308,26 @@ async function RunInfill({
         : LlamaLogLevel.warn;
     const llama = gpu == null
         ? await getLlama("lastBuild", {
-            logLevel: llamaLogLevel
+            logLevel: llamaLogLevel,
+            numa
         })
         : await getLlama({
             gpu,
-            logLevel: llamaLogLevel
+            logLevel: llamaLogLevel,
+            numa
         });
     const logBatchSize = batchSize != null;
     const useMmap = !noMmap && llama.supportsMmap;
 
     const resolvedModelPath = await resolveCommandGgufPath(modelArg, llama, headers, {
         flashAttention,
+        swaFullCache,
         useMmap
     });
     const resolvedDraftModelPath = (tokenPredictionDraftModel != null && tokenPredictionDraftModel !== "")
         ? await resolveCommandGgufPath(tokenPredictionDraftModel, llama, headers, {
             flashAttention,
+            swaFullCache,
             useMmap,
             consoleTitle: "Draft model file"
         })
@@ -353,6 +380,7 @@ async function RunInfill({
                         ? {fitContext: {contextSize}}
                         : undefined,
                 defaultContextFlashAttention: flashAttention,
+                defaultContextSwaFullCache: swaFullCache,
                 useMmap,
                 ignoreMemorySafetyChecks: gpuLayers != null,
                 onLoadProgress(loadProgress: number) {
@@ -386,6 +414,7 @@ async function RunInfill({
                 return await llama.loadModel({
                     modelPath: resolvedDraftModelPath,
                     defaultContextFlashAttention: flashAttention,
+                    defaultContextSwaFullCache: swaFullCache,
                     useMmap,
                     onLoadProgress(loadProgress: number) {
                         progressUpdater.setProgress(loadProgress);

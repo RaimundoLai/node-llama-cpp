@@ -14,7 +14,9 @@ export const enum GgufArchitectureType {
     bert = "bert",
     nomicBert = "nomic-bert",
     nomicBertMoe = "nomic-bert-moe",
+    neoBert = "neo-bert",
     jinaBertV2 = "jina-bert-v2",
+    jinaBertV3 = "jina-bert-v3",
     bloom = "bloom",
     stablelm = "stablelm",
     qwen = "qwen",
@@ -23,10 +25,14 @@ export const enum GgufArchitectureType {
     qwen2vl = "qwen2vl",
     qwen3 = "qwen3",
     qwen3moe = "qwen3moe",
+    qwen3next = "qwen3next",
+    qwen3vl = "qwen3vl",
+    qwen3vlmoe = "qwen3vlmoe",
     phi2 = "phi2",
     phi3 = "phi3",
     phimoe = "phimoe",
     plamo = "plamo",
+    plamo2 = "plamo2",
     codeshell = "codeshell",
     orion = "orion",
     internlm2 = "internlm2",
@@ -35,8 +41,13 @@ export const enum GgufArchitectureType {
     gemma = "gemma",
     gemma2 = "gemma2",
     gemma3 = "gemma3",
+    gemma3n = "gemma3n",
+    gemmaEmbedding = "gemma-embedding",
     starcoder2 = "starcoder2",
     mamba = "mamba",
+    mamba2 = "mamba2",
+    jamba = "jamba",
+    falconH1 = "falcon-h1",
     xverse = "xverse",
     commandR = "command-r",
     cohere2 = "cohere2",
@@ -50,22 +61,51 @@ export const enum GgufArchitectureType {
     deepseek2 = "deepseek2",
     chatglm = "chatglm",
     glm4 = "glm4",
+    glm4moe = "glm4moe",
     bitnet = "bitnet",
     t5 = "t5",
     t5encoder = "t5encoder",
     jais = "jais",
     nemotron = "nemotron",
+    nemotronH = "nemotron_h",
     exaone = "exaone",
+    exaone4 = "exaone4",
     rwkv6 = "rwkv6",
     rwkv6qwen2 = "rwkv6qwen2",
     rwkv7 = "rwkv7",
     arwkv7 = "arwkv7",
     granite = "granite",
     granitemoe = "granitemoe",
+    granitehybrid = "granitehybrid",
     chameleon = "chameleon",
     wavtokenizerDec = "wavtokenizer-dec",
     plm = "plm",
     bailingmoe = "bailingmoe",
+    bailingmoe2 = "bailingmoe2",
+    dots1 = "dots1",
+    arcee = "arcee",
+    afmoe = "afmoe",
+    ernie4_5 = "ernie4_5",
+    ernie4_5Moe = "ernie4_5-moe",
+    hunyuanMoe = "hunyuan-moe",
+    hunyuanDense = "hunyuan-dense",
+    smollm3 = "smollm3",
+    gptOss = "gpt-oss",
+    lfm2 = "lfm2",
+    lfm2moe = "lfm2moe",
+    dream = "dream",
+    smallthinker = "smallthinker",
+    llada = "llada",
+    lladaMoe = "llada-moe",
+    seedOss = "seed_oss",
+    grovemoe = "grovemoe",
+    apertus = "apertus",
+    minimaxM2 = "minimax-m2",
+    cogvlm = "cogvlm",
+    rnd1 = "rnd1",
+    panguEmbedded = "pangu-embedded",
+    mistral3 = "mistral3",
+    clip = "clip",
     unknown = "(unknown)"
 }
 
@@ -135,8 +175,9 @@ export enum GgufFileType {
     MOSTLY_Q4_0_4_4 = 33, // deprecated
     MOSTLY_Q4_0_4_8 = 34, // deprecated
     MOSTLY_Q4_0_8_8 = 35, // deprecated
-    MOSTLY_TQ1_0 = 36, // deprecated
-    MOSTLY_TQ2_0 = 37 // deprecated
+    MOSTLY_TQ1_0 = 36,
+    MOSTLY_TQ2_0 = 37,
+    MOSTLY_MXFP4_MOE = 38
 }
 
 
@@ -240,12 +281,12 @@ export const enum GgufMetadataTokenizerTokenType {
 
 export type GgufMetadataTokenizer = {
     readonly ggml: {
-        readonly model: "no_vocab" | "llama" | "gpt2" | "bert" | string,
+        readonly model: "no_vocab" | "none" | "llama" | "gpt2" | "bert" | "rwkv" | "t5" | "plamo2" | string,
         readonly pre?: "default" | "llama3" | "llama-v3" | "llama-bpe" | "deepseek-llm" | "deepseek-coder" | "falcon" | "falcon3" |
             "pixtral" | "mpt" | "starcoder" | "gpt-2" | "phi-2" | "jina-es" | "jina-de" | "jina-v1-en" | "jina-v2-es" | "jina-v2-de" |
             "jina-v2-code" | "refact" | "command-r" | "qwen2" | "stablelm2" | "olmo" | "dbrx" | "smaug-bpe" | "poro-chat" | "chatglm-bpe" |
-            "viking" | "jais" | "tekken" | "smollm" | "codeshell" | "bloom" | "gpt3-finnish" | "exaone" | "chameleon" | "minerva-7b" |
-            "megrez" | "gpt-4o" | "superbpe" | "trillion" | "bailingmoe" | string,
+            "viking" | "jais" | "tekken" | "smollm" | "codeshell" | "bloom" | "gpt3-finnish" | "exaone" | "exaone4" | "chameleon" |
+            "minerva-7b" | "megrez" | "gpt-4o" | "superbpe" | "trillion" | "bailingmoe" | "a.x-4.0" | "mellum" | string,
         readonly tokens: readonly string[],
         readonly token_type: GgufMetadataTokenizerTokenType[],
         readonly token_type_count?: number,
@@ -256,7 +297,7 @@ export type GgufMetadataTokenizer = {
         readonly eot_token_id?: number,
         readonly eom_token_id?: number,
         readonly unknown_token_id?: number,
-        readonly separator_token_id?: number,
+        readonly seperator_token_id?: number,
         readonly padding_token_id?: number,
         readonly cls_token_id?: number,
         readonly mask_token_id?: number,
@@ -281,7 +322,8 @@ export type GgufMetadataTokenizer = {
     readonly huggingface?: {
         readonly json?: string
     },
-    readonly chat_template?: string
+    readonly chat_template?: string,
+    readonly "chat_template.rerank"?: string
 };
 
 export const enum GgufMetadataArchitecturePoolingType {
@@ -316,6 +358,7 @@ export type GgufMetadataDefaultArchitectureType = {
         readonly layer_norm_rms_epsilon?: number,
         readonly key_length?: number,
         readonly value_length?: number,
+        readonly sliding_window?: number,
         readonly causal?: boolean
     },
 

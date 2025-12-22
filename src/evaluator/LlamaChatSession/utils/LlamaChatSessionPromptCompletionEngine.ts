@@ -2,6 +2,7 @@ import {DisposeAggregator, DisposedError} from "lifecycle-utils";
 import {getConsoleLogPrefix} from "../../../utils/getConsoleLogPrefix.js";
 import {LruCache} from "../../../utils/LruCache.js";
 import {safeEventCallback} from "../../../utils/safeEventCallback.js";
+import type {LlamaContextSequence} from "../../LlamaContext/LlamaContext.js";
 import type {LLamaChatCompletePromptOptions, LlamaChatSession} from "../LlamaChatSession.js";
 
 export type LLamaChatPromptCompletionEngineOptions = {
@@ -32,10 +33,24 @@ export type LLamaChatPromptCompletionEngineOptions = {
     customStopTriggers?: LLamaChatCompletePromptOptions["customStopTriggers"],
     grammar?: LLamaChatCompletePromptOptions["grammar"],
     functions?: LLamaChatCompletePromptOptions["functions"],
-    documentFunctionParams?: LLamaChatCompletePromptOptions["documentFunctionParams"]
+    documentFunctionParams?: LLamaChatCompletePromptOptions["documentFunctionParams"],
+    completeAsModel?: LLamaChatCompletePromptOptions["completeAsModel"]
 };
 
-const defaultMaxPreloadTokens = 256;
+export const defaultMaxPreloadTokens = (sequence: LlamaContextSequence) => {
+    const defaultValue: number = 256;
+
+    return sequence.model.fileInsights.swaSize != null
+        ? Math.min(
+            Math.ceil(sequence.model.fileInsights.swaSize / 2),
+            defaultValue,
+            Math.ceil(sequence.contextSize / 2)
+        )
+        : Math.min(
+            defaultValue,
+            Math.ceil(sequence.contextSize / 2)
+        );
+};
 const defaultMaxCachedCompletions = 100;
 
 export class LlamaChatSessionPromptCompletionEngine {
@@ -51,7 +66,7 @@ export class LlamaChatSessionPromptCompletionEngine {
     /** @internal */ private _disposed = false;
 
     private constructor(chatSession: LlamaChatSession, {
-        maxPreloadTokens = defaultMaxPreloadTokens,
+        maxPreloadTokens = defaultMaxPreloadTokens(chatSession.sequence),
         onGeneration,
         maxCachedCompletions = defaultMaxCachedCompletions,
         ...options

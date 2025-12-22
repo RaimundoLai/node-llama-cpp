@@ -27,7 +27,8 @@ Napi::Value getGpuVramInfo(const Napi::CallbackInfo& info) {
 
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         device = ggml_backend_dev_get(i);
-        if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+        auto deviceType = ggml_backend_dev_type(device);
+        if (deviceType == GGML_BACKEND_DEVICE_TYPE_GPU || deviceType == GGML_BACKEND_DEVICE_TYPE_IGPU) {
             deviceTotal = 0;
             deviceFree = 0;
             ggml_backend_dev_memory(device, &deviceFree, &deviceTotal);
@@ -54,8 +55,12 @@ Napi::Value getGpuVramInfo(const Napi::CallbackInfo& info) {
             // this means that we counted memory from devices that aren't used by llama.cpp
             vulkanDeviceUnifiedVramSize = 0;
         }
-        
+
         unifiedVramSize += vulkanDeviceUnifiedVramSize;
+    }
+
+    if (used == 0 && vulkanDeviceUsed != 0) {
+        used = vulkanDeviceUsed;
     }
 #endif
 
@@ -72,8 +77,8 @@ Napi::Value getGpuDeviceInfo(const Napi::CallbackInfo& info) {
 
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t device = ggml_backend_dev_get(i);
-        if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-
+        auto deviceType = ggml_backend_dev_type(device);
+        if (deviceType == GGML_BACKEND_DEVICE_TYPE_GPU || deviceType == GGML_BACKEND_DEVICE_TYPE_IGPU) {
             deviceNames.push_back(std::string(ggml_backend_dev_description(device)));
         }
     }
@@ -93,7 +98,7 @@ std::pair<ggml_backend_dev_t, std::string> getGpuDevice() {
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t device = ggml_backend_dev_get(i);
         const auto deviceName = std::string(ggml_backend_dev_name(device));
-        
+
         if (deviceName == "Metal") {
             return std::pair<ggml_backend_dev_t, std::string>(device, "metal");
         } else if (std::string(deviceName).find("Vulkan") == 0) {
@@ -106,7 +111,7 @@ std::pair<ggml_backend_dev_t, std::string> getGpuDevice() {
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t device = ggml_backend_dev_get(i);
         const auto deviceName = std::string(ggml_backend_dev_name(device));
-        
+
         if (deviceName == "CPU") {
             return std::pair<ggml_backend_dev_t, std::string>(device, "cpu");
         }
@@ -119,7 +124,7 @@ Napi::Value getGpuType(const Napi::CallbackInfo& info) {
     const auto gpuDeviceRes = getGpuDevice();
     const auto device = gpuDeviceRes.first;
     const auto deviceType = gpuDeviceRes.second;
-    
+
     if (deviceType == "cpu") {
         return Napi::Boolean::New(info.Env(), false);
     } else if (device != nullptr && deviceType != "") {

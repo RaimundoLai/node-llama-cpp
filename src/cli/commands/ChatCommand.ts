@@ -12,9 +12,9 @@ import {defineChatSessionFunction} from "../../evaluator/LlamaChatSession/utils/
 import {getLlama} from "../../bindings/getLlama.js";
 import {LlamaGrammar} from "../../evaluator/LlamaGrammar.js";
 import {LlamaChatSession} from "../../evaluator/LlamaChatSession/LlamaChatSession.js";
-import {LlamaJsonSchemaGrammar} from "../../evaluator/LlamaJsonSchemaGrammar.js";
 import {
-    BuildGpu, LlamaLogLevel, LlamaLogLevelGreaterThan, nodeLlamaCppGpuOptions, parseNodeLlamaCppGpuOption
+    BuildGpu, LlamaLogLevel, LlamaLogLevelGreaterThan, LlamaNuma, llamaNumaOptions, nodeLlamaCppGpuOptions, parseNodeLlamaCppGpuOption,
+    parseNumaOption
 } from "../../bindings/types.js";
 import withOra from "../../utils/withOra.js";
 import {TokenMeter} from "../../evaluator/TokenMeter.js";
@@ -45,6 +45,7 @@ type ChatCommand = {
     contextSize?: number,
     batchSize?: number,
     flashAttention?: boolean,
+    swaFullCache?: boolean,
     noTrimWhitespace: boolean,
     grammar: "text" | Parameters<typeof LlamaGrammar.getFor>[1],
     jsonSchemaGrammarFile?: string,
@@ -61,11 +62,13 @@ type ChatCommand = {
     repeatFrequencyPenalty?: number,
     repeatPresencePenalty?: number,
     maxTokens: number,
+    reasoningBudget?: number,
     noHistory: boolean,
     environmentFunctions: boolean,
     tokenPredictionDraftModel?: string,
     tokenPredictionModelContextSize?: number,
     debug: boolean,
+    numa?: LlamaNuma,
     meter: boolean,
     timing: boolean,
     noMmap: boolean,
@@ -154,13 +157,19 @@ export const ChatCommand: CommandModule<object, ChatCommand> = {
             .option("batchSize", {
                 alias: "b",
                 type: "number",
-                description: "Batch size to use for the model context. The default value is the context size"
+                description: "Batch size to use for the model context"
             })
             .option("flashAttention", {
                 alias: "fa",
                 type: "boolean",
                 default: false,
                 description: "Enable flash attention"
+            })
+            .option("swaFullCache", {
+                alias: "noSwa",
+                type: "boolean",
+                default: false,
+                description: "Disable SWA (Sliding Window Attention) on supported models"
             })
             .option("noTrimWhitespace", {
                 type: "boolean",
@@ -255,6 +264,13 @@ export const ChatCommand: CommandModule<object, ChatCommand> = {
                 default: 0,
                 description: "Maximum number of tokens to generate in responses. Set to `0` to disable. Set to `-1` to set to the context size"
             })
+            .option("reasoningBudget", {
+                alias: ["tb", "thinkingBudget", "thoughtsBudget"],
+                type: "number",
+                default: -1,
+                defaultDescription: "Unlimited",
+                description: "Maximum number of tokens the model can use for thoughts. Set to `0` to disable reasoning"
+            })
             .option("noHistory", {
                 alias: "nh",
                 type: "boolean",
@@ -284,6 +300,20 @@ export const ChatCommand: CommandModule<object, ChatCommand> = {
                 default: false,
                 description: "Print llama.cpp info and debug logs"
             })
+            .option("numa", {
+                type: "string",
+
+                // yargs types don't support passing `false` as a choice, although it is supported by yargs
+                choices: llamaNumaOptions as any as Exclude<typeof llamaNumaOptions[number], false>[],
+                coerce: (value) => {
+                    if (value == null || value == "")
+                        return false;
+
+                    return parseNumaOption(value);
+                },
+                defaultDescription: "false",
+                description: "NUMA allocation policy. See the `numa` option on the `getLlama` method for more information"
+            })
             .option("meter", {
                 type: "boolean",
                 default: false,
@@ -308,19 +338,20 @@ export const ChatCommand: CommandModule<object, ChatCommand> = {
     },
     async handler({
         modelPath, header, gpu, systemInfo, systemPrompt, systemPromptFile, prompt,
-        promptFile, wrapper, noJinja, contextSize, batchSize, flashAttention,
+        promptFile, wrapper, noJinja, contextSize, batchSize, flashAttention, swaFullCache,
         noTrimWhitespace, grammar, jsonSchemaGrammarFile, threads, temperature, minP, topK,
         topP, seed, gpuLayers, repeatPenalty, lastTokensRepeatPenalty, penalizeRepeatingNewLine,
-        repeatFrequencyPenalty, repeatPresencePenalty, maxTokens, noHistory,
-        environmentFunctions, tokenPredictionDraftModel, tokenPredictionModelContextSize, debug, meter, timing, noMmap, printTimings
+        repeatFrequencyPenalty, repeatPresencePenalty, maxTokens, reasoningBudget, noHistory,
+        environmentFunctions, tokenPredictionDraftModel, tokenPredictionModelContextSize, debug, numa, meter, timing, noMmap, printTimings
     }) {
         try {
             await RunChat({
                 modelPath, header, gpu, systemInfo, systemPrompt, systemPromptFile, prompt, promptFile, wrapper, noJinja, contextSize,
-                batchSize, flashAttention, noTrimWhitespace, grammar, jsonSchemaGrammarFile, threads, temperature, minP, topK, topP, seed,
+                batchSize, flashAttention, swaFullCache, noTrimWhitespace, grammar, jsonSchemaGrammarFile, threads,
+                temperature, minP, topK, topP, seed,
                 gpuLayers, lastTokensRepeatPenalty, repeatPenalty, penalizeRepeatingNewLine, repeatFrequencyPenalty, repeatPresencePenalty,
-                maxTokens, noHistory, environmentFunctions, tokenPredictionDraftModel, tokenPredictionModelContextSize, debug, meter,
-                timing, noMmap, printTimings
+                maxTokens, reasoningBudget, noHistory, environmentFunctions, tokenPredictionDraftModel, tokenPredictionModelContextSize,
+                debug, numa, meter, timing, noMmap, printTimings
             });
         } catch (err) {
             await new Promise((accept) => setTimeout(accept, 0)); // wait for logs to finish printing
@@ -333,13 +364,15 @@ export const ChatCommand: CommandModule<object, ChatCommand> = {
 
 async function RunChat({
     modelPath: modelArg, header: headerArg, gpu, systemInfo, systemPrompt, systemPromptFile, prompt, promptFile, wrapper, noJinja,
-    contextSize, batchSize, flashAttention, noTrimWhitespace, grammar: grammarArg, jsonSchemaGrammarFile: jsonSchemaGrammarFilePath,
+    contextSize, batchSize, flashAttention, swaFullCache, noTrimWhitespace, grammar: grammarArg,
+    jsonSchemaGrammarFile: jsonSchemaGrammarFilePath,
     threads, temperature, minP, topK, topP, seed, gpuLayers, lastTokensRepeatPenalty, repeatPenalty, penalizeRepeatingNewLine,
-    repeatFrequencyPenalty, repeatPresencePenalty, maxTokens, noHistory, environmentFunctions, tokenPredictionDraftModel,
-    tokenPredictionModelContextSize, debug, meter, timing, noMmap, printTimings
+    repeatFrequencyPenalty, repeatPresencePenalty, maxTokens, reasoningBudget, noHistory, environmentFunctions, tokenPredictionDraftModel,
+    tokenPredictionModelContextSize, debug, numa, meter, timing, noMmap, printTimings
 }: ChatCommand) {
     if (contextSize === -1) contextSize = undefined;
     if (gpuLayers === -1) gpuLayers = undefined;
+    if (reasoningBudget === -1) reasoningBudget = undefined;
 
     const headers = resolveHeaderFlag(headerArg);
     const trimWhitespace = !noTrimWhitespace;
@@ -352,22 +385,26 @@ async function RunChat({
         : LlamaLogLevel.warn;
     const llama = gpu == null
         ? await getLlama("lastBuild", {
-            logLevel: llamaLogLevel
+            logLevel: llamaLogLevel,
+            numa
         })
         : await getLlama({
             gpu,
-            logLevel: llamaLogLevel
+            logLevel: llamaLogLevel,
+            numa
         });
     const logBatchSize = batchSize != null;
     const useMmap = !noMmap && llama.supportsMmap;
 
     const resolvedModelPath = await resolveCommandGgufPath(modelArg, llama, headers, {
         flashAttention,
+        swaFullCache,
         useMmap
     });
     const resolvedDraftModelPath = (tokenPredictionDraftModel != null && tokenPredictionDraftModel !== "")
         ? await resolveCommandGgufPath(tokenPredictionDraftModel, llama, headers, {
             flashAttention,
+            swaFullCache,
             useMmap,
             consoleTitle: "Draft model file"
         })
@@ -413,6 +450,7 @@ async function RunChat({
                         ? {fitContext: {contextSize}}
                         : undefined,
                 defaultContextFlashAttention: flashAttention,
+                defaultContextSwaFullCache: swaFullCache,
                 useMmap,
                 ignoreMemorySafetyChecks: gpuLayers != null,
                 onLoadProgress(loadProgress: number) {
@@ -446,6 +484,7 @@ async function RunChat({
                 return await llama.loadModel({
                     modelPath: resolvedDraftModelPath,
                     defaultContextFlashAttention: flashAttention,
+                    defaultContextSwaFullCache: swaFullCache,
                     useMmap,
                     onLoadProgress(loadProgress: number) {
                         progressUpdater.setProgress(loadProgress);
@@ -507,8 +546,7 @@ async function RunChat({
     });
 
     const grammar = jsonSchemaGrammarFilePath != null
-        ? new LlamaJsonSchemaGrammar(
-            llama,
+        ? await llama.createGrammarForJsonSchema(
             await fs.readJson(
                 path.resolve(process.cwd(), jsonSchemaGrammarFilePath)
             )
@@ -673,6 +711,9 @@ async function RunChat({
                 seed: seed ?? undefined,
                 signal: abortController.signal,
                 stopOnAbortSignal: true,
+                budgets: {
+                    thoughtTokens: reasoningBudget
+                },
                 repeatPenalty: {
                     penalty: repeatPenalty,
                     frequencyPenalty: repeatFrequencyPenalty != null ? repeatFrequencyPenalty : undefined,

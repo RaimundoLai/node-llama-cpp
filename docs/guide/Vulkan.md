@@ -34,7 +34,7 @@ If you see `Vulkan used VRAM` in the output, it means that Vulkan support is wor
 
 ## Building `node-llama-cpp` With Vulkan Support {#building}
 ### Prerequisites
-* [`cmake-js` dependencies](https://github.com/cmake-js/cmake-js#:~:text=projectRoot/build%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%5Bstring%5D-,Requirements%3A,-CMake)
+* [`cmake-js` dependencies](https://github.com/cmake-js/cmake-js#:~:text=%5Bstring%5D-,Requirements%3A,-CMake)
 * [CMake](https://cmake.org/download/) 3.26 or higher (optional, recommended if you have build issues)
 * <a id="vulkan-sdk" />[Vulkan SDK](https://vulkan.lunarg.com/sdk/home):
   >
@@ -64,6 +64,11 @@ If you see `Vulkan used VRAM` in the output, it means that Vulkan support is wor
   ```shell
   reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem" /v "LongPathsEnabled" /t REG_DWORD /d "1" /f  
   ```
+  :::
+* :::details Windows only: LLVM (optional, recommended if you have build issues)
+  There are a few methods to install LLVM:
+  * **As part of Microsoft Visual C++ Build Tools (Recommended):** the dependencies for Window listed under [Downloading a Release](./building-from-source.md#downloading-a-release) will also install LLVM.
+  * **Independently:** visit the [latest LLVM release page](https://github.com/llvm/llvm-project/releases/latest) and download the installer for your Windows architecture.
   :::
 
 ### Building From Source

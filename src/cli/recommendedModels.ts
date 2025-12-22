@@ -1,6 +1,30 @@
 import {ModelRecommendation} from "./utils/resolveModelRecommendationFileOptions.js";
 
 export const recommendedModels: ModelRecommendation[] = [{
+    name: "gpt-oss 20B",
+    abilities: ["chat", "complete", "functionCalling", "reasoning"],
+    description: "gpt-oss models were created by OpenAI and are using chain of though (CoT) to reason across a wide variety of topics, and utilize a Mixture of Experts architecture.\n" +
+        "It's optimized for agentic cases, with native support for function calling.\n" +
+        "Mixtures of Experts (MoE) is a technique where different models, each skilled in solving a particular kind of problem, work together to the improve the overall performance on complex tasks.\n" +
+        "This model only has 3.6B active parameters, thus making it very fast.\n" +
+        "This is the 20 billion parameters version of the model.",
+
+    fileOptions: [
+        "hf:giladgd/gpt-oss-20b-GGUF/gpt-oss-20b.MXFP4.gguf"
+    ]
+}, {
+    name: "gpt-oss 120B",
+    abilities: ["chat", "complete", "functionCalling", "reasoning"],
+    description: "gpt-oss models were created by OpenAI and are using chain of though (CoT) to reason across a wide variety of topics, and utilize a Mixture of Experts architecture.\n" +
+        "It's optimized for agentic cases, with native support for function calling.\n" +
+        "Mixtures of Experts (MoE) is a technique where different models, each skilled in solving a particular kind of problem, work together to the improve the overall performance on complex tasks.\n" +
+        "This model only has 5.1B active parameters, thus making it very fast.\n" +
+        "This is the 120 billion parameters version of the model.",
+
+    fileOptions: [
+        "hf:giladgd/gpt-oss-120b-GGUF/gpt-oss-120b.MXFP4-00001-of-00002.gguf"
+    ]
+}, {
     name: "Qwen 3 32B",
     abilities: ["chat", "complete", "functionCalling", "reasoning"],
     description: "Qwen model was created by Alibaba and is using chain of though (CoT) to reason across a wide variety of topics.\n" +
@@ -67,6 +91,20 @@ export const recommendedModels: ModelRecommendation[] = [{
 
     fileOptions: [
         "hf:Qwen/Qwen3-0.6B-GGUF:Q8_0"
+    ]
+}, {
+    name: "Seed OSS 36B",
+    abilities: ["chat", "complete", "functionCalling", "reasoning"],
+    description: "The Seed OSS model was created by ByteDance and is using chain of though (CoT) to reason across a wide variety of topics.\n" +
+        "It's optimized for agentic use cases, with native support for function calling and flexible control of the thinking budget (via `SeedChatWrapper` options).\n" +
+        "This model can support a context size of up to 512K tokens (if you have enough VRAM to accommodate it).\n" +
+        "This is a 36 billion parameters model.",
+
+    fileOptions: [
+        "hf:giladgd/Seed-OSS-36B-Instruct-GGUF:Q8_0",
+        "hf:giladgd/Seed-OSS-36B-Instruct-GGUF:Q6_K",
+        "hf:giladgd/Seed-OSS-36B-Instruct-GGUF:Q5_K_M",
+        "hf:giladgd/Seed-OSS-36B-Instruct-GGUF:Q4_K_M"
     ]
 }, {
     name: "DeepSeek R1 Distill Qwen 7B",

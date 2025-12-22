@@ -1,4 +1,5 @@
 import {Token} from "../types.js";
+import {LlamaNuma} from "./types.js";
 
 
 export type BindingModule = {
@@ -28,7 +29,8 @@ export type BindingModule = {
             embeddings?: boolean,
             ranking?: boolean,
             threads?: number,
-            performanceTracking?: boolean
+            performanceTracking?: boolean,
+            swaFullCache?: boolean
         }): AddonContext
     },
     AddonGrammar: {
@@ -46,6 +48,7 @@ export type BindingModule = {
         acceptGrammarEvaluationStateToken(grammarEvaluationState: AddonGrammarEvaluationState, token: Token): void,
         canBeNextTokenForGrammarEvaluationState(grammarEvaluationState: AddonGrammarEvaluationState, token: Token): boolean
     },
+    markLoaded(): boolean,
     systemInfo(): string,
     getSupportsGpuOffloading(): boolean,
     getSupportsMmap(): boolean,
@@ -54,6 +57,7 @@ export type BindingModule = {
     getMathCores(): number,
     getBlockSizeForGgmlType(ggmlType: number): number | undefined,
     getTypeSizeForGgmlType(ggmlType: number): number | undefined,
+    getGgmlGraphOverheadCustom(size: number, grads: boolean): number,
     getConsts(): {
         ggmlMaxDims: number,
         ggmlTypeF16Size: number,
@@ -83,6 +87,7 @@ export type BindingModule = {
         total: number
     },
     init(): Promise<void>,
+    setNuma(numa?: LlamaNuma): void,
     loadBackends(forceLoadLibrariesSearchPath?: string): void,
     dispose(): Promise<void>
 };
@@ -143,6 +148,8 @@ export type AddonContext = {
     // startPos in inclusive, endPos is exclusive
     shiftSequenceTokenCells(sequenceId: number, startPos: number, endPos: number, shiftDelta: number): void,
 
+    getSequenceKvCacheMinPosition(sequenceId: number): number,
+    getSequenceKvCacheMaxPosition(sequenceId: number): number,
     getEmbedding(inputTokensLength: number, maxVectorSize?: number): Float64Array,
     getStateSize(): number,
     getThreads(): number,
@@ -155,7 +162,7 @@ export type AddonContext = {
 };
 
 export type BatchLogitIndex = number & {
-    __batchLogitIndex: never
+    readonly __batchLogitIndex: never
 };
 
 export type AddonGrammar = {
@@ -163,7 +170,7 @@ export type AddonGrammar = {
 };
 
 export type AddonGrammarEvaluationState = "AddonGrammarEvaluationState" & {
-    __brand: never
+    readonly __brand: never
 };
 
 export type AddonSampler = {

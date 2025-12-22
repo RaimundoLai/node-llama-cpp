@@ -8,7 +8,7 @@ import {appendUserMessageToChatHistory} from "../../utils/appendUserMessageToCha
 import {LlamaContextSequence} from "../LlamaContext/LlamaContext.js";
 import {LlamaGrammar} from "../LlamaGrammar.js";
 import {
-    LlamaChat, LLamaChatContextShiftOptions, LlamaChatResponse, LlamaChatResponseFunctionCall, LlamaChatResponseChunk,
+    LlamaChat, LLamaChatContextShiftOptions, LlamaChatResponse, LlamaChatResponseChunk, LlamaChatResponseFunctionCall,
     LlamaChatResponseFunctionCallParamsChunk
 } from "../LlamaChat/LlamaChat.js";
 import {EvaluationPriority} from "../LlamaContext/types.js";
@@ -16,6 +16,7 @@ import {TokenBias} from "../TokenBias.js";
 import {LlamaText, LlamaTextJSON} from "../../utils/LlamaText.js";
 import {wrapAbortSignal} from "../../utils/wrapAbortSignal.js";
 import {safeEventCallback} from "../../utils/safeEventCallback.js";
+import {GgufArchitectureType} from "../../gguf/types/GgufMetadataTypes.js";
 import {
     LLamaChatPromptCompletionEngineOptions, LlamaChatSessionPromptCompletionEngine
 } from "./utils/LlamaChatSessionPromptCompletionEngine.js";
@@ -209,7 +210,26 @@ export type LLamaChatPromptOptions<Functions extends ChatSessionModelFunctions |
      *
      * Only relevant when using function calling (via passing the `functions` option).
      */
-    onFunctionCallParamsChunk?: (chunk: LlamaChatResponseFunctionCallParamsChunk) => void
+    onFunctionCallParamsChunk?: (chunk: LlamaChatResponseFunctionCallParamsChunk) => void,
+
+    /**
+     * Set the maximum number of tokens that the model is allowed to spend on various segmented responses.
+     */
+    budgets?: {
+        /**
+         * Budget for thought tokens.
+         *
+         * Defaults to `Infinity`.
+         */
+        thoughtTokens?: number,
+
+        /**
+         * Budget for comment tokens.
+         *
+         * Defaults to `Infinity`.
+         */
+        commentTokens?: number
+    }
 } & ({
     grammar?: LlamaGrammar,
     functions?: never,
@@ -284,7 +304,54 @@ export type LLamaChatCompletePromptOptions = {
      *
      * It's best to provide the same value that was used for the previous prompt here.
      */
-    documentFunctionParams?: boolean
+    documentFunctionParams?: boolean,
+
+    /**
+     * Whether to complete the prompt as a model response.
+     *
+     * - **`"auto"`**: Automatically determine whether to complete as a model response based on the model used.
+     *   This is a good option to workaround some models that don't support used prompt completions.
+     * - **`true`**: Always complete as a model response
+     * - **`false`**: Never complete as a model response
+     *
+     * Defaults to `"auto"`.
+     */
+    completeAsModel?: "auto" | boolean | {
+        /**
+         * Whether to complete the prompt as a model response.
+         *
+         * - **`"auto"`**: Automatically determine whether to complete as a model response based on the model used.
+         *   This is a good option to workaround some models that don't support used prompt completions.
+         * - **`true`**: Always complete as a model response
+         * - **`false`**: Never complete as a model response
+         *
+         * Defaults to `"auto"`.
+         */
+        enabled?: "auto" | boolean,
+
+        /**
+         * The messages to append to the chat history to generate a completion as a model response.
+         *
+         * If the last message is a model message, the prompt will be pushed to it for the completion,
+         * otherwise a new model message will be added with the prompt.
+         *
+         * It must contain a user message or a system message before the model message.
+         *
+         * Default to:
+         * ```ts
+         * [
+         *     {
+         *         type: "system",
+         *         text: "For your next response predict what the user may send next. " +
+         *             "No yapping, no whitespace. Match the user's language and tone."
+         *     },
+         *     {type: "user", text: ""},
+         *     {type: "model", response: [""]}
+         * ]
+         * ```
+         */
+        appendedMessages?: ChatHistoryItem[]
+    }
 };
 
 export type LLamaChatPreloadPromptOptions = {
@@ -330,6 +397,18 @@ export type LlamaChatSessionRepeatPenalty = {
      */
     presencePenalty?: number
 };
+
+const defaultCompleteAsModel = {
+    enabled: "auto",
+    appendedMessages: [
+        {
+            type: "system",
+            text: "For your next response predict what the user may send next. No yapping, no whitespace. Match the user's language and tone."
+        },
+        {type: "user", text: ""},
+        {type: "model", response: [""]}
+    ]
+} as const satisfies LLamaChatCompletePromptOptions["completeAsModel"];
 
 /**
  * @see [Using `LlamaChatSession`](https://node-llama-cpp.withcat.ai/guide/chat-session) tutorial
@@ -445,6 +524,7 @@ export class LlamaChatSession {
             onToken,
             onResponseChunk,
             onFunctionCallParamsChunk,
+            budgets,
             signal,
             stopOnAbortSignal = false,
             maxTokens,
@@ -469,7 +549,7 @@ export class LlamaChatSession {
             maxParallelFunctionCalls: maxParallelFunctionCalls as undefined,
             onFunctionCallParamsChunk: onFunctionCallParamsChunk as undefined,
 
-            onTextChunk, onToken, onResponseChunk, signal, stopOnAbortSignal, maxTokens,
+            onTextChunk, onToken, onResponseChunk, budgets, signal, stopOnAbortSignal, maxTokens,
             temperature, minP, topK, topP, seed,
             trimWhitespaceSuffix, responsePrefix, repeatPenalty, tokenBias, customStopTriggers
         });
@@ -489,6 +569,7 @@ export class LlamaChatSession {
         onToken,
         onResponseChunk,
         onFunctionCallParamsChunk,
+        budgets,
         signal,
         stopOnAbortSignal = false,
         maxTokens,
@@ -511,7 +592,7 @@ export class LlamaChatSession {
             throw new Error("The LlamaGrammar used by passed to this function was created with a different Llama instance than the one used by this sequence's model. Make sure you use the same Llama instance for both the model and the grammar.");
 
         this._stopAllPreloadAndPromptCompletions();
-        return await withLock(this._chatLock, "evaluation", signal, async () => {
+        return await withLock([this._chatLock, "evaluation"], signal, async () => {
             this._ensureNotDisposed();
             this._stopAllPreloadAndPromptCompletions();
 
@@ -589,6 +670,11 @@ export class LlamaChatSession {
                                 paramsChunk: chunk.paramsChunk,
                                 done: chunk.done
                             })),
+                        budgets: {
+                            includeCurrentResponse: true,
+                            thoughtTokens: budgets?.thoughtTokens,
+                            commentTokens: budgets?.commentTokens
+                        },
                         signal: abortController.signal,
                         stopOnAbortSignal,
                         repeatPenalty,
@@ -768,6 +854,7 @@ export class LlamaChatSession {
     public async preloadPrompt(prompt: string, options: LLamaChatPreloadPromptOptions = {}): Promise<void> {
         await this.completePromptWithMeta(prompt, {
             ...options,
+            completeAsModel: false,
             maxTokens: 0
         });
     }
@@ -823,7 +910,8 @@ export class LlamaChatSession {
         repeatPenalty,
         tokenBias,
         customStopTriggers,
-        evaluationPriority
+        evaluationPriority,
+        completeAsModel
     }: LLamaChatCompletePromptOptions = {}) {
         this._ensureNotDisposed();
 
@@ -837,70 +925,193 @@ export class LlamaChatSession {
         const [abortController, disposeAbortController] = wrapAbortSignal(signal);
         this._preloadAndCompleteAbortControllers.add(abortController);
 
+        const completeAsModelEnabled = typeof completeAsModel == "boolean"
+            ? completeAsModel
+            : completeAsModel === "auto"
+                ? "auto"
+                : completeAsModel?.enabled ?? defaultCompleteAsModel.enabled;
+
+        const modelArchitecture = this.model.fileInfo.metadata?.general?.architecture;
+        const shouldCompleteAsModel = completeAsModelEnabled === "auto"
+            ? modelArchitecture === GgufArchitectureType.gptOss
+            : completeAsModelEnabled;
+
         try {
-            return await withLock(this._chatLock, "evaluation", abortController.signal, async () => {
+            return await withLock([this._chatLock, "evaluation"], abortController.signal, async () => {
                 this._ensureNotDisposed();
 
                 if (this._chat == null)
                     throw new DisposedError();
 
-                const {completion, lastEvaluation, metadata} = await this._chat.loadChatAndCompleteUserMessage(
-                    asWithLastUserMessageRemoved(this._chatHistory),
-                    {
-                        initialUserPrompt: prompt,
-                        functions,
-                        documentFunctionParams,
-                        grammar,
-                        onTextChunk,
-                        onToken,
-                        signal: abortController.signal,
-                        stopOnAbortSignal: true,
-                        repeatPenalty,
-                        minP,
-                        topK,
-                        topP,
-                        seed,
-                        tokenBias,
-                        customStopTriggers,
-                        maxTokens,
-                        temperature,
-                        trimWhitespaceSuffix,
-                        contextShift: {
-                            ...this._contextShift,
-                            lastEvaluationMetadata: this._lastEvaluation?.contextShiftMetadata
-                        },
-                        evaluationPriority,
-                        lastEvaluationContextWindow: {
-                            history: asWithLastUserMessageRemoved(this._lastEvaluation?.contextWindow),
-                            minimumOverlapPercentageToPreventContextShift: 0.8
+                if (shouldCompleteAsModel) {
+                    const messagesToAppendOption = (typeof completeAsModel == "boolean" || completeAsModel === "auto")
+                        ? defaultCompleteAsModel.appendedMessages
+                        : completeAsModel?.appendedMessages ?? defaultCompleteAsModel.appendedMessages;
+
+                    const messagesToAppend = messagesToAppendOption.length === 0
+                        ? defaultCompleteAsModel.appendedMessages
+                        : messagesToAppendOption;
+
+                    const addMessageToChatHistory = (chatHistory: ChatHistoryItem[]): {
+                        history: ChatHistoryItem[],
+                        addedCount: number
+                    } => {
+                        const newHistory = chatHistory.slice();
+                        if (messagesToAppend.at(0)?.type === "model")
+                            newHistory.push({type: "user", text: ""});
+
+                        for (let i = 0; i < messagesToAppend.length; i++) {
+                            const item = messagesToAppend[i];
+                            const isLastItem = i === messagesToAppend.length - 1;
+
+                            if (item == null)
+                                continue;
+
+                            if (isLastItem && item.type === "model") {
+                                const newResponse = item.response.slice();
+                                if (typeof newResponse.at(-1) === "string")
+                                    newResponse.push((newResponse.pop()! as string) + prompt);
+                                else
+                                    newResponse.push(prompt);
+
+                                newHistory.push({
+                                    type: "model",
+                                    response: newResponse
+                                });
+                            } else
+                                newHistory.push(item);
                         }
-                    }
-                );
-                this._ensureNotDisposed();
 
-                this._lastEvaluation = {
-                    cleanHistory: this._chatHistory,
-                    contextWindow: asWithLastUserMessageRemoved(lastEvaluation.contextWindow),
-                    contextShiftMetadata: lastEvaluation.contextShiftMetadata
-                };
-                this._canUseContextWindowForCompletion = this._chatHistory.at(-1)?.type === "user";
+                        if (messagesToAppend.at(-1)?.type !== "model")
+                            newHistory.push({type: "model", response: [prompt]});
 
-                if (!stopOnAbortSignal && metadata.stopReason === "abort" && abortController.signal?.aborted)
-                    throw abortController.signal.reason;
+                        return {
+                            history: newHistory,
+                            addedCount: newHistory.length - chatHistory.length
+                        };
+                    };
 
-                if (metadata.stopReason === "customStopTrigger")
+                    const {history: messagesWithPrompt, addedCount} = addMessageToChatHistory(this._chatHistory);
+                    const {response, lastEvaluation, metadata} = await this._chat.generateResponse(
+                        messagesWithPrompt,
+                        {
+                            abortOnNonText: true,
+                            functions,
+                            documentFunctionParams,
+                            grammar: grammar as undefined, // this is allowed only because `abortOnNonText` is enabled
+                            onTextChunk,
+                            onToken,
+                            signal: abortController.signal,
+                            stopOnAbortSignal: true,
+                            repeatPenalty,
+                            minP,
+                            topK,
+                            topP,
+                            seed,
+                            tokenBias,
+                            customStopTriggers,
+                            maxTokens: maxTokens == null
+                                ? undefined
+                                : Math.min(1, maxTokens), // regular prompting ignores `maxTokens: 0`
+                            temperature,
+                            trimWhitespaceSuffix,
+                            contextShift: {
+                                ...this._contextShift,
+                                lastEvaluationMetadata: this._lastEvaluation?.contextShiftMetadata
+                            },
+                            evaluationPriority,
+                            lastEvaluationContextWindow: {
+                                history: this._lastEvaluation?.contextWindow == null
+                                    ? undefined
+                                    : addMessageToChatHistory(this._lastEvaluation?.contextWindow).history,
+                                minimumOverlapPercentageToPreventContextShift: 0.8
+                            }
+                        }
+                    );
+                    this._ensureNotDisposed();
+
+                    this._lastEvaluation = {
+                        cleanHistory: this._chatHistory,
+                        contextWindow: lastEvaluation.contextWindow.slice(0, -addedCount),
+                        contextShiftMetadata: lastEvaluation.contextShiftMetadata
+                    };
+                    this._canUseContextWindowForCompletion = this._chatHistory.at(-1)?.type === "user";
+
+                    if (!stopOnAbortSignal && metadata.stopReason === "abort" && abortController.signal?.aborted)
+                        throw abortController.signal.reason;
+
+                    if (metadata.stopReason === "customStopTrigger")
+                        return {
+                            completion: response,
+                            stopReason: metadata.stopReason,
+                            customStopTrigger: metadata.customStopTrigger,
+                            remainingGenerationAfterStop: metadata.remainingGenerationAfterStop
+                        };
+
+                    return {
+                        completion: response,
+                        stopReason: metadata.stopReason,
+                        remainingGenerationAfterStop: metadata.remainingGenerationAfterStop
+                    };
+                } else {
+                    const {completion, lastEvaluation, metadata} = await this._chat.loadChatAndCompleteUserMessage(
+                        asWithLastUserMessageRemoved(this._chatHistory),
+                        {
+                            initialUserPrompt: prompt,
+                            functions,
+                            documentFunctionParams,
+                            grammar,
+                            onTextChunk,
+                            onToken,
+                            signal: abortController.signal,
+                            stopOnAbortSignal: true,
+                            repeatPenalty,
+                            minP,
+                            topK,
+                            topP,
+                            seed,
+                            tokenBias,
+                            customStopTriggers,
+                            maxTokens,
+                            temperature,
+                            trimWhitespaceSuffix,
+                            contextShift: {
+                                ...this._contextShift,
+                                lastEvaluationMetadata: this._lastEvaluation?.contextShiftMetadata
+                            },
+                            evaluationPriority,
+                            lastEvaluationContextWindow: {
+                                history: asWithLastUserMessageRemoved(this._lastEvaluation?.contextWindow),
+                                minimumOverlapPercentageToPreventContextShift: 0.8
+                            }
+                        }
+                    );
+                    this._ensureNotDisposed();
+
+                    this._lastEvaluation = {
+                        cleanHistory: this._chatHistory,
+                        contextWindow: asWithLastUserMessageRemoved(lastEvaluation.contextWindow),
+                        contextShiftMetadata: lastEvaluation.contextShiftMetadata
+                    };
+                    this._canUseContextWindowForCompletion = this._chatHistory.at(-1)?.type === "user";
+
+                    if (!stopOnAbortSignal && metadata.stopReason === "abort" && abortController.signal?.aborted)
+                        throw abortController.signal.reason;
+
+                    if (metadata.stopReason === "customStopTrigger")
+                        return {
+                            completion: completion,
+                            stopReason: metadata.stopReason,
+                            customStopTrigger: metadata.customStopTrigger,
+                            remainingGenerationAfterStop: metadata.remainingGenerationAfterStop
+                        };
+
                     return {
                         completion: completion,
                         stopReason: metadata.stopReason,
-                        customStopTrigger: metadata.customStopTrigger,
                         remainingGenerationAfterStop: metadata.remainingGenerationAfterStop
                     };
-
-                return {
-                    completion: completion,
-                    stopReason: metadata.stopReason,
-                    remainingGenerationAfterStop: metadata.remainingGenerationAfterStop
-                };
+                }
             });
         } finally {
             this._preloadAndCompleteAbortControllers.delete(abortController);

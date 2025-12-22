@@ -21,6 +21,7 @@ import {withCliCommandDescriptionDocsUrl} from "../../../utils/withCliCommandDes
 import {documentationPageUrls} from "../../../../config.js";
 import {Llama} from "../../../../bindings/Llama.js";
 import {toBytes} from "../../../utils/toBytes.js";
+import {padSafeContextSize} from "../../../../evaluator/LlamaContext/utils/padSafeContextSize.js";
 
 type InspectMeasureCommand = {
     modelPath?: string,
@@ -31,6 +32,8 @@ type InspectMeasureCommand = {
     minContextSize: number,
     maxContextSize?: number,
     flashAttention?: boolean,
+    swaFullCache?: boolean,
+    batchSize?: number,
     measures: number,
     memory: "vram" | "ram" | "all",
     noMmap: boolean,
@@ -104,6 +107,17 @@ export const InspectMeasureCommand: CommandModule<object, InspectMeasureCommand>
                 default: false,
                 description: "Enable flash attention for the context"
             })
+            .option("swaFullCache", {
+                alias: "noSwa",
+                type: "boolean",
+                default: false,
+                description: "Disable SWA (Sliding Window Attention) on supported models"
+            })
+            .option("batchSize", {
+                alias: "b",
+                type: "number",
+                description: "Batch size to use for the model context"
+            })
             .option("measures", {
                 alias: "n",
                 type: "number",
@@ -140,8 +154,8 @@ export const InspectMeasureCommand: CommandModule<object, InspectMeasureCommand>
             });
     },
     async handler({
-        modelPath: ggufPath, header: headerArg, gpu, minLayers, maxLayers, minContextSize, maxContextSize, flashAttention, measures = 10,
-        memory: measureMemoryType, noMmap, printHeaderBeforeEachLayer = true, evaluateText, repeatEvaluateText
+        modelPath: ggufPath, header: headerArg, gpu, minLayers, maxLayers, minContextSize, maxContextSize, flashAttention, swaFullCache,
+        batchSize, measures = 10, memory: measureMemoryType, noMmap, printHeaderBeforeEachLayer = true, evaluateText, repeatEvaluateText
     }: InspectMeasureCommand) {
         if (maxLayers === -1) maxLayers = undefined;
         if (maxContextSize === -1) maxContextSize = undefined;
@@ -162,7 +176,7 @@ export const InspectMeasureCommand: CommandModule<object, InspectMeasureCommand>
 
         const useMmap = !noMmap && llama.supportsMmap;
         const resolvedGgufPath = await resolveCommandGgufPath(ggufPath, llama, headers, {
-            flashAttention, useMmap
+            flashAttention, swaFullCache, useMmap
         });
 
         console.info(`${chalk.yellow("File:")} ${getReadablePath(resolvedGgufPath)}`);
@@ -216,6 +230,8 @@ export const InspectMeasureCommand: CommandModule<object, InspectMeasureCommand>
                 maxContextSize,
                 minContextSize,
                 flashAttention,
+                swaFullCache,
+                batchSize,
                 tests: measures,
                 evaluateText: evaluateText == null
                     ? undefined
@@ -286,7 +302,9 @@ export const InspectMeasureCommand: CommandModule<object, InspectMeasureCommand>
                             : ggufInsights.estimateContextResourceRequirements({
                                 contextSize: previousContextSizeCheck,
                                 modelGpuLayers: lastGpuLayers,
-                                flashAttention
+                                flashAttention,
+                                swaFullCache,
+                                batchSize
                             });
 
                         const contextVramEstimation = contextResourceEstimation?.gpuVram;
@@ -496,7 +514,7 @@ const expectedFileName = "InspectMeasureCommand";
 
 async function measureModel({
     modelPath, useMmap, gpu, tests, initialMaxContextSize, maxContextSize, minContextSize, maxGpuLayers, minGpuLayers, flashAttention,
-    evaluateText, exitAfterMeasurement = false, onInfo
+    swaFullCache, batchSize, evaluateText, exitAfterMeasurement = false, onInfo
 }: {
     modelPath: string,
     useMmap?: boolean,
@@ -508,6 +526,8 @@ async function measureModel({
     maxGpuLayers: number,
     minGpuLayers?: number,
     flashAttention?: boolean,
+    swaFullCache?: boolean,
+    batchSize?: number,
     evaluateText?: string,
     exitAfterMeasurement?: boolean,
     onInfo(data: {
@@ -615,6 +635,8 @@ async function measureModel({
                         maxGpuLayers,
                         minGpuLayers,
                         flashAttention,
+                        swaFullCache,
+                        batchSize,
                         evaluateText,
                         exitAfterMeasurement
                     } satisfies ParentToChildMessage);
@@ -716,11 +738,12 @@ async function runTestWorkerLogic() {
     }
 
     async function testContextSizes({
-        model, modelVramUsage, modelRamUsage, startContextSize, maxContextSize, minContextSize, tests, flashAttention, evaluateText,
-        exitAfterMeasurement = false
+        model, modelVramUsage, modelRamUsage, startContextSize, maxContextSize, minContextSize, tests, flashAttention, swaFullCache,
+        batchSize, evaluateText, exitAfterMeasurement = false
     }: {
         model: LlamaModel, modelVramUsage: number, modelRamUsage: number, startContextSize?: number, maxContextSize?: number,
-        minContextSize?: number, tests: number, flashAttention?: boolean, evaluateText?: string, exitAfterMeasurement?: boolean
+        minContextSize?: number, tests: number, flashAttention?: boolean, swaFullCache?: boolean, batchSize?: number, evaluateText?: string,
+        exitAfterMeasurement?: boolean
     }) {
         let measurementsDone: number = 0;
         const contextSizeCheckPlan = getContextSizesCheckPlan(
@@ -750,6 +773,8 @@ async function runTestWorkerLogic() {
                     ),
                     ignoreMemorySafetyChecks: currentContextSizeCheck != null,
                     flashAttention,
+                    swaFullCache,
+                    batchSize,
                     failedCreationRemedy: false
                 });
 
@@ -803,11 +828,12 @@ async function runTestWorkerLogic() {
     }
 
     async function testWithGpuLayers({
-        modelPath, useMmap, gpuLayers, tests, startContextSize, maxContextSize, minContextSize, flashAttention, evaluateText,
-        exitAfterMeasurement = false
+        modelPath, useMmap, gpuLayers, tests, startContextSize, maxContextSize, minContextSize, flashAttention, swaFullCache, batchSize,
+        evaluateText, exitAfterMeasurement = false
     }: {
         modelPath: string, useMmap?: boolean, gpuLayers: number, tests: number, startContextSize?: number, maxContextSize?: number,
-        minContextSize?: number, flashAttention?: boolean, evaluateText?: string, exitAfterMeasurement?: boolean
+        minContextSize?: number, flashAttention?: boolean, swaFullCache?: boolean, batchSize?: number, evaluateText?: string,
+        exitAfterMeasurement?: boolean
     }) {
         try {
             const preModelVramUsage = (await llama.getVramState()).used;
@@ -817,6 +843,7 @@ async function runTestWorkerLogic() {
                 useMmap,
                 gpuLayers,
                 defaultContextFlashAttention: flashAttention,
+                defaultContextSwaFullCache: swaFullCache,
                 ignoreMemorySafetyChecks: true
             });
             const postModelVramUsage = (await llama.getVramState()).used;
@@ -839,6 +866,8 @@ async function runTestWorkerLogic() {
                 maxContextSize,
                 minContextSize,
                 flashAttention,
+                swaFullCache,
+                batchSize,
                 tests,
                 evaluateText,
                 exitAfterMeasurement
@@ -887,6 +916,8 @@ async function runTestWorkerLogic() {
                     maxContextSize: message.maxContextSize,
                     minContextSize: message.minContextSize,
                     flashAttention: message.flashAttention,
+                    swaFullCache: message.swaFullCache,
+                    batchSize: message.batchSize,
                     evaluateText: message.evaluateText,
                     exitAfterMeasurement: message.exitAfterMeasurement
                 });
@@ -921,6 +952,8 @@ function getContextSizesCheckPlan(trainContextSize: number, tests: number = 10, 
 
         if (size < 2)
             size = 2;
+
+        size = padSafeContextSize(size, "up");
 
         if (res[res.length - 1] === size) {
             shouldStop = true;
@@ -976,6 +1009,8 @@ type ParentToChildMessage = {
     maxGpuLayers: number,
     minGpuLayers?: number,
     flashAttention?: boolean,
+    swaFullCache?: boolean,
+    batchSize?: number,
     initialMaxContextSize?: number,
     maxContextSize?: number,
     minContextSize?: number,

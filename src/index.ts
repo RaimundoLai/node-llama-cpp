@@ -4,7 +4,7 @@ import {getLlama, type LlamaOptions, type LastBuildOptions} from "./bindings/get
 import {getLlamaGpuTypes} from "./bindings/utils/getLlamaGpuTypes.js";
 import {NoBinaryFoundError} from "./bindings/utils/NoBinaryFoundError.js";
 import {
-    type LlamaGpuType, LlamaLogLevel, LlamaLogLevelGreaterThan, LlamaLogLevelGreaterThanOrEqual, LlamaVocabularyType
+    type LlamaGpuType, type LlamaNuma, LlamaLogLevel, LlamaLogLevelGreaterThan, LlamaLogLevelGreaterThanOrEqual, LlamaVocabularyType
 } from "./bindings/types.js";
 import {resolveModelFile, type ResolveModelFileOptions} from "./utils/resolveModelFile.js";
 import {LlamaModel, LlamaModelInfillTokens, type LlamaModelOptions, LlamaModelTokens} from "./evaluator/LlamaModel/LlamaModel.js";
@@ -60,6 +60,7 @@ import {FalconChatWrapper} from "./chatWrappers/FalconChatWrapper.js";
 import {AlpacaChatWrapper} from "./chatWrappers/AlpacaChatWrapper.js";
 import {FunctionaryChatWrapper} from "./chatWrappers/FunctionaryChatWrapper.js";
 import {GemmaChatWrapper} from "./chatWrappers/GemmaChatWrapper.js";
+import {HarmonyChatWrapper} from "./chatWrappers/HarmonyChatWrapper.js";
 import {TemplateChatWrapper, type TemplateChatWrapperOptions} from "./chatWrappers/generic/TemplateChatWrapper.js";
 import {
     JinjaTemplateChatWrapper, type JinjaTemplateChatWrapperOptions, type JinjaTemplateChatWrapperOptionsConvertMessageFormat
@@ -83,6 +84,7 @@ import {getModuleVersion} from "./utils/getModuleVersion.js";
 import {readGgufFileInfo} from "./gguf/readGgufFileInfo.js";
 import {GgufInsights, type GgufInsightsResourceRequirements} from "./gguf/insights/GgufInsights.js";
 import {GgufInsightsConfigurationResolver} from "./gguf/insights/GgufInsightsConfigurationResolver.js";
+import {GgufInsightsTokens} from "./gguf/insights/GgufInsightsTokens.js";
 import {
     createModelDownloader, ModelDownloader, type ModelDownloaderOptions, combineModelDownloaders, CombinedModelDownloader,
     type CombinedModelDownloaderOptions
@@ -95,7 +97,8 @@ import {
     type ChatModelResponse, type ChatSessionModelFunction, type ChatSessionModelFunctions, type ChatSystemMessage, type ChatUserMessage,
     type Token, type Tokenizer, type Detokenizer, isChatModelResponseFunctionCall, isChatModelResponseSegment,
     type LLamaContextualRepeatPenalty, type ChatWrapperSettings, type ChatWrapperSettingsSegment,
-    type ChatWrapperGenerateContextStateOptions, type ChatWrapperGeneratedContextState, type ChatWrapperGenerateInitialHistoryOptions
+    type ChatWrapperGenerateContextStateOptions, type ChatWrapperGeneratedContextState, type ChatWrapperGeneratedPrefixTriggersContextState,
+    type ChatWrapperGeneratedInitiallyEngagedFunctionsContextState, type ChatWrapperGenerateInitialHistoryOptions
 } from "./types.js";
 import {
     type GbnfJsonArraySchema, type GbnfJsonBasicSchema, type GbnfJsonConstSchema, type GbnfJsonEnumSchema, type GbnfJsonStringSchema,
@@ -124,6 +127,7 @@ export {
     type LlamaOptions,
     type LastBuildOptions,
     type LlamaGpuType,
+    type LlamaNuma,
     type LlamaClasses,
     LlamaLogLevel,
     NoBinaryFoundError,
@@ -204,6 +208,8 @@ export {
     type ChatWrapperSettingsSegment,
     type ChatWrapperGenerateContextStateOptions,
     type ChatWrapperGeneratedContextState,
+    type ChatWrapperGeneratedPrefixTriggersContextState,
+    type ChatWrapperGeneratedInitiallyEngagedFunctionsContextState,
     type ChatWrapperGenerateInitialHistoryOptions,
     EmptyChatWrapper,
     DeepSeekChatWrapper,
@@ -219,6 +225,7 @@ export {
     AlpacaChatWrapper,
     FunctionaryChatWrapper,
     GemmaChatWrapper,
+    HarmonyChatWrapper,
     TemplateChatWrapper,
     type TemplateChatWrapperOptions,
     JinjaTemplateChatWrapper,
@@ -309,6 +316,7 @@ export {
     isGgufMetadataOfArchitectureType,
     GgufInsights,
     type GgufInsightsResourceRequirements,
+    GgufInsightsTokens,
     GgufInsightsConfigurationResolver,
     createModelDownloader,
     ModelDownloader,

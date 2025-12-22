@@ -172,7 +172,7 @@ const documents = [
     "Cleaning the house is a good way to keep it tidy"
 ];
 
-const query = "Tell me a goegraphical fact";
+const query = "Tell me a geographical fact";
 const rankedDocuments = await context.rankAndSort(query, documents);
 
 const topDocument = rankedDocuments[0]!;
@@ -185,7 +185,7 @@ console.log("Ranked documents:", rankedDocuments);
 ```
 > This example will produce this output:
 > ```
-> query: Tell me a goegraphical fact
+> query: Tell me a geographical fact
 > Top document: Mount Everest is the tallest mountain in the world
 > Second document: The capital of France is Paris
 > ```
@@ -204,7 +204,7 @@ import DataBadge from "../../.vitepress/components/DataBadge/DataBadge.vue";
 </script>
 
 #### Embedded databases {#databases-embedded}
-* **[LanceDB](https://lancedb.com/)** ([GitHub](https://github.com/lancedb/lancedb) | [npm](https://www.npmjs.com/package/@lancedb/lancedb) | [Quick start](https://lancedb.github.io/lancedb/basic/#__tabbed_1_2)) - Serverless vector database you can embed inside your application. No server required.
+* **[LanceDB](https://lancedb.com/)** ([GitHub](https://github.com/lancedb/lancedb) | [npm](https://www.npmjs.com/package/@lancedb/lancedb) | [Quick start](https://www.npmjs.com/package/@lancedb/lancedb#usage)) - Serverless vector database you can embed inside your application. No server required.
   <br/><DataBadge title="Written in" content="Rust"/><DataBadge title="License" content="Apache-2.0"/>
 
 * **Vectra** ([GitHub](https://github.com/Stevenic/vectra) | [npm](https://www.npmjs.com/package/vectra)) - local vector database using local files

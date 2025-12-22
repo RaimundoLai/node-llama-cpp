@@ -39,12 +39,14 @@ export class GgufInsightsConfigurationResolver {
         targetContextSize,
         embeddingContext = false,
         flashAttention = false,
+        swaFullCache = false,
         useMmap = this._ggufInsights._llama.supportsMmap
     }: {
         targetGpuLayers?: number | "max",
         targetContextSize?: number,
         embeddingContext?: boolean,
         flashAttention?: boolean,
+        swaFullCache?: boolean,
         useMmap?: boolean
     } = {}, {
         getVramState = (() => this._ggufInsights._llama._vramOrchestrator.getMemoryState()),
@@ -63,6 +65,7 @@ export class GgufInsightsConfigurationResolver {
     } = {}) {
         const compatibilityScore = await this.scoreModelConfigurationCompatibility({
             flashAttention,
+            swaFullCache,
             contextSize: targetContextSize,
             embeddingContext,
             forceGpuLayers: targetGpuLayers,
@@ -105,6 +108,7 @@ export class GgufInsightsConfigurationResolver {
         contextSize = Math.min(4096, this._ggufInsights.trainContextSize ?? 4096),
         embeddingContext = false,
         flashAttention = false,
+        swaFullCache = false,
         maximumFittedContextSizeMultiplier = 100,
         maximumUnfitConfigurationResourceMultiplier = 100,
         forceStrictContextSize = false,
@@ -114,6 +118,7 @@ export class GgufInsightsConfigurationResolver {
         contextSize?: number,
         embeddingContext?: boolean,
         flashAttention?: boolean,
+        swaFullCache?: boolean,
         maximumFittedContextSizeMultiplier?: number,
         maximumUnfitConfigurationResourceMultiplier?: number,
 
@@ -209,6 +214,7 @@ export class GgufInsightsConfigurationResolver {
                     llamaGpu,
                     llamaSupportsGpuOffloading,
                     defaultContextFlashAttention: flashAttention,
+                    defaultContextSwaFullCache: swaFullCache,
                     ignoreMemorySafetyChecks: forceGpuLayers != null,
                     useMmap
                 }
@@ -225,10 +231,12 @@ export class GgufInsightsConfigurationResolver {
             useMmap
         });
 
-        let resolvedContextSize = Math.min(
-            this.ggufInsights.trainContextSize ?? defaultContextSizeForUnfitContextSizeConfiguration,
-            defaultContextSizeForUnfitContextSizeConfiguration
-        );
+        let resolvedContextSize = forceStrictContextSize
+            ? contextSize
+            : Math.min(
+                this.ggufInsights.trainContextSize ?? defaultContextSizeForUnfitContextSizeConfiguration,
+                defaultContextSizeForUnfitContextSizeConfiguration
+            );
         let contextFitsMemory = false;
 
         try {
@@ -263,9 +271,17 @@ export class GgufInsightsConfigurationResolver {
                 modelGpuLayers: resolvedGpuLayers,
                 modelTrainContextSize: this._ggufInsights.trainContextSize ?? defaultTrainContextSizeForEstimationPurposes,
                 ignoreMemorySafetyChecks: forceStrictContextSize,
-                flashAttention
+                flashAttention,
+                swaFullCache
             });
             contextFitsMemory = true;
+
+            if (forceStrictContextSize && resolvedContextSize < contextSize) {
+                contextFitsMemory = false;
+                resolvedContextSize = contextSize;
+            } else if (forceStrictContextSize && resolvedContextSize > contextSize) {
+                resolvedContextSize = contextSize;
+            }
         } catch (err) {
             if (!(err instanceof InsufficientMemoryError))
                 throw err;
@@ -275,7 +291,8 @@ export class GgufInsightsConfigurationResolver {
             contextSize: resolvedContextSize,
             isEmbeddingContext: embeddingContext,
             modelGpuLayers: resolvedGpuLayers,
-            flashAttention
+            flashAttention,
+            swaFullCache
         });
 
         const rankPoints = {
@@ -371,11 +388,12 @@ export class GgufInsightsConfigurationResolver {
         llamaVramPaddingSize = this._ggufInsights._llama.vramPaddingSize, llamaGpu = this._ggufInsights._llama.gpu,
         llamaSupportsGpuOffloading = this._ggufInsights._llama.supportsGpuOffloading,
         defaultContextFlashAttention = false,
+        defaultContextSwaFullCache = false,
         useMmap = this._ggufInsights._llama.supportsMmap
     }: {
         ignoreMemorySafetyChecks?: boolean, getVramState?(): Promise<{total: number, free: number}>,
         llamaVramPaddingSize?: number, llamaGpu?: BuildGpu, llamaSupportsGpuOffloading?: boolean, defaultContextFlashAttention?: boolean,
-        useMmap?: boolean
+        defaultContextSwaFullCache?: boolean, useMmap?: boolean
     } = {}) {
         return resolveModelGpuLayersOption(gpuLayers, {
             ggufInsights: this._ggufInsights,
@@ -385,6 +403,7 @@ export class GgufInsightsConfigurationResolver {
             llamaGpu,
             llamaSupportsGpuOffloading,
             defaultContextFlashAttention,
+            defaultContextSwaFullCache,
             useMmap
         });
     }
@@ -399,6 +418,7 @@ export class GgufInsightsConfigurationResolver {
         batchSize,
         modelTrainContextSize,
         flashAttention = false,
+        swaFullCache = false,
         getVramState = (() => this._ggufInsights._llama._vramOrchestrator.getMemoryState()),
         getRamState = (async () => this._ggufInsights._llama._ramOrchestrator.getMemoryState()),
         getSwapState = (() => this._ggufInsights._llama._swapOrchestrator.getMemoryState()),
@@ -410,6 +430,7 @@ export class GgufInsightsConfigurationResolver {
         modelGpuLayers: number,
         modelTrainContextSize: number,
         flashAttention?: boolean,
+        swaFullCache?: boolean,
         batchSize?: LlamaContextOptions["batchSize"],
         sequences?: number,
         getVramState?(): Promise<{total: number, free: number, unifiedSize: number}>,
@@ -427,6 +448,7 @@ export class GgufInsightsConfigurationResolver {
             modelGpuLayers,
             modelTrainContextSize,
             flashAttention,
+            swaFullCache,
             getVramState,
             getRamState,
             getSwapState,

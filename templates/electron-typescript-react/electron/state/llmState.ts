@@ -95,7 +95,7 @@ let inProgressResponse: SimplifiedModelChatItem["message"] = [];
 
 export const llmFunctions = {
     async loadLlama() {
-        await withLock(llmFunctions, "llama", async () => {
+        await withLock([llmFunctions, "llama"], async () => {
             if (llama != null) {
                 try {
                     await llama.dispose();
@@ -136,7 +136,7 @@ export const llmFunctions = {
         });
     },
     async loadModel(modelPath: string) {
-        await withLock(llmFunctions, "model", async () => {
+        await withLock([llmFunctions, "model"], async () => {
             if (llama == null)
                 throw new Error("Llama not loaded");
 
@@ -198,7 +198,7 @@ export const llmFunctions = {
         });
     },
     async createContext() {
-        await withLock(llmFunctions, "context", async () => {
+        await withLock([llmFunctions, "context"], async () => {
             if (model == null)
                 throw new Error("Model not loaded");
 
@@ -242,7 +242,7 @@ export const llmFunctions = {
         });
     },
     async createContextSequence() {
-        await withLock(llmFunctions, "contextSequence", async () => {
+        await withLock([llmFunctions, "contextSequence"], async () => {
             if (context == null)
                 throw new Error("Context not loaded");
 
@@ -278,7 +278,7 @@ export const llmFunctions = {
     },
     chatSession: {
         async createChatSession() {
-            await withLock(llmFunctions, "chatSession", async () => {
+            await withLock([llmFunctions, "chatSession"], async () => {
                 if (contextSequence == null)
                     throw new Error("Context sequence not loaded");
 
@@ -307,6 +307,7 @@ export const llmFunctions = {
 
                     try {
                         await chatSession?.preloadPrompt("", {
+                            functions: modelFunctions, // these won't be called, but are used to avoid redundant context shifts
                             signal: promptAbortController?.signal
                         });
                     } catch (err) {
@@ -336,7 +337,7 @@ export const llmFunctions = {
             });
         },
         async prompt(message: string) {
-            await withLock(llmFunctions, "chatSession", async () => {
+            await withLock([llmFunctions, "chatSession"], async () => {
                 if (chatSession == null)
                     throw new Error("Chat session not loaded");
 
@@ -408,7 +409,8 @@ export const llmFunctions = {
                         simplifiedChat: getSimplifiedChatHistory(false),
                         draftPrompt: {
                             ...llmState.state.chatSession.draftPrompt,
-                            completion: chatSessionCompletionEngine?.complete(llmState.state.chatSession.draftPrompt.prompt) ?? ""
+                            completion:
+                                chatSessionCompletionEngine?.complete(llmState.state.chatSession.draftPrompt.prompt)?.trimStart() ?? ""
                         }
                     }
                 };
@@ -428,6 +430,7 @@ export const llmFunctions = {
                 autoDisposeSequence: false
             });
             chatSessionCompletionEngine = chatSession.createPromptCompletionEngine({
+                functions: modelFunctions, // these won't be called, but are used to avoid redundant context shifts
                 onGeneration(prompt, completion) {
                     if (llmState.state.chatSession.draftPrompt.prompt === prompt) {
                         llmState.state = {
@@ -436,7 +439,7 @@ export const llmFunctions = {
                                 ...llmState.state.chatSession,
                                 draftPrompt: {
                                     prompt,
-                                    completion
+                                    completion: completion.trimStart()
                                 }
                             }
                         };
@@ -454,7 +457,7 @@ export const llmFunctions = {
                     simplifiedChat: [],
                     draftPrompt: {
                         prompt: llmState.state.chatSession.draftPrompt.prompt,
-                        completion: chatSessionCompletionEngine.complete(llmState.state.chatSession.draftPrompt.prompt) ?? ""
+                        completion: chatSessionCompletionEngine.complete(llmState.state.chatSession.draftPrompt.prompt)?.trimStart() ?? ""
                     }
                 }
             };
@@ -483,7 +486,7 @@ export const llmFunctions = {
                     ...llmState.state.chatSession,
                     draftPrompt: {
                         prompt: prompt,
-                        completion: chatSessionCompletionEngine.complete(prompt) ?? ""
+                        completion: chatSessionCompletionEngine.complete(prompt)?.trimStart() ?? ""
                     }
                 }
             };

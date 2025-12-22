@@ -5,13 +5,16 @@ import {DisposedError, EventRelay, withLock} from "lifecycle-utils";
 import {getConsoleLogPrefix} from "../utils/getConsoleLogPrefix.js";
 import {LlamaModel, LlamaModelOptions} from "../evaluator/LlamaModel/LlamaModel.js";
 import {DisposeGuard} from "../utils/DisposeGuard.js";
-import {GbnfJsonSchema} from "../utils/gbnfJson/types.js";
+import {GbnfJsonDefList, GbnfJsonSchema} from "../utils/gbnfJson/types.js";
 import {LlamaJsonSchemaGrammar} from "../evaluator/LlamaJsonSchemaGrammar.js";
 import {LlamaGrammar, LlamaGrammarOptions} from "../evaluator/LlamaGrammar.js";
 import {ThreadsSplitter} from "../utils/ThreadsSplitter.js";
 import {getLlamaClasses, LlamaClasses} from "../utils/getLlamaClasses.js";
 import {BindingModule} from "./AddonTypes.js";
-import {BuildGpu, BuildMetadataFile, LlamaGpuType, LlamaLocks, LlamaLogLevel, LlamaLogLevelGreaterThanOrEqual} from "./types.js";
+import {
+    BuildGpu, BuildMetadataFile, LlamaGpuType, LlamaLocks, LlamaLogLevel,
+    LlamaLogLevelGreaterThan, LlamaLogLevelGreaterThanOrEqual, LlamaNuma
+} from "./types.js";
 import {MemoryOrchestrator, MemoryReservation} from "./utils/MemoryOrchestrator.js";
 
 export const LlamaLogLevelToAddonLogLevel: ReadonlyMap<LlamaLogLevel, number> = new Map([
@@ -41,7 +44,9 @@ export class Llama {
     /** @internal */ public readonly _swapOrchestrator: MemoryOrchestrator;
     /** @internal */ public readonly _debug: boolean;
     /** @internal */ public readonly _threadsSplitter: ThreadsSplitter;
+    /** @internal */ public _hadErrorLogs: boolean = false;
     /** @internal */ private readonly _gpu: LlamaGpuType;
+    /** @internal */ private readonly _numa: LlamaNuma;
     /** @internal */ private readonly _buildType: "localBuild" | "prebuilt";
     /** @internal */ private readonly _cmakeOptions: Readonly<Record<string, string>>;
     /** @internal */ private readonly _supportsGpuOffloading: boolean;
@@ -67,11 +72,12 @@ export class Llama {
     public readonly onDispose = new EventRelay<void>();
 
     private constructor({
-        bindings, bindingPath, logLevel, logger, buildType, cmakeOptions, llamaCppRelease, debug, buildGpu, maxThreads, vramOrchestrator,
-        vramPadding, ramOrchestrator, ramPadding, swapOrchestrator
+        bindings, bindingPath, extBackendsPath, logLevel, logger, buildType, cmakeOptions, llamaCppRelease, debug, numa, buildGpu,
+        maxThreads, vramOrchestrator, vramPadding, ramOrchestrator, ramPadding, swapOrchestrator, skipLlamaInit
     }: {
         bindings: BindingModule,
         bindingPath: string,
+        extBackendsPath?: string,
         logLevel: LlamaLogLevel,
         logger: (level: LlamaLogLevel, message: string) => void,
         buildType: "localBuild" | "prebuilt",
@@ -81,34 +87,50 @@ export class Llama {
             release: string
         },
         debug: boolean,
+        numa?: LlamaNuma,
         buildGpu: BuildGpu,
         maxThreads?: number,
         vramOrchestrator: MemoryOrchestrator,
         vramPadding: MemoryReservation,
         ramOrchestrator: MemoryOrchestrator,
         ramPadding: MemoryReservation,
-        swapOrchestrator: MemoryOrchestrator
+        swapOrchestrator: MemoryOrchestrator,
+        skipLlamaInit: boolean
     }) {
         this._dispatchPendingLogMicrotask = this._dispatchPendingLogMicrotask.bind(this);
         this._onAddonLog = this._onAddonLog.bind(this);
 
         this._bindings = bindings;
         this._debug = debug;
+        this._numa = numa ?? false;
         this._logLevel = this._debug
             ? LlamaLogLevel.debug
             : (logLevel ?? LlamaLogLevel.debug);
 
-        if (!this._debug) {
+        const previouslyLoaded = bindings.markLoaded();
+
+        if (!this._debug && (!skipLlamaInit || !previouslyLoaded)) {
             this._bindings.setLogger(this._onAddonLog);
             this._bindings.setLoggerLogLevel(LlamaLogLevelToAddonLogLevel.get(this._logLevel) ?? defaultLogLevel);
         }
 
         bindings.loadBackends();
-        const loadedGpu = bindings.getGpuType();
-        if (loadedGpu == null || (loadedGpu === false && buildGpu !== false))
-            bindings.loadBackends(path.dirname(bindingPath));
+        let loadedGpu = bindings.getGpuType();
+        if (loadedGpu == null || (loadedGpu === false && buildGpu !== false)) {
+            const backendsPath = path.dirname(bindingPath);
+            const fallbackBackendsDir = path.join(extBackendsPath ?? backendsPath, "fallback");
+
+            bindings.loadBackends(backendsPath);
+
+            loadedGpu = bindings.getGpuType();
+            if (loadedGpu == null || (loadedGpu === false && buildGpu !== false))
+                bindings.loadBackends(fallbackBackendsDir);
+        }
 
         bindings.ensureGpuDeviceIsSupported();
+
+        if (this._numa !== false)
+            bindings.setNuma(numa);
 
         this._gpu = bindings.getGpuType() ?? false;
         this._supportsGpuOffloading = bindings.getSupportsGpuOffloading();
@@ -205,6 +227,13 @@ export class Llama {
 
     public set maxThreads(value: number) {
         this._threadsSplitter.maxThreads = Math.floor(Math.max(0, value));
+    }
+
+    /**
+     * See the `numa` option of `getLlama` for more information
+     */
+    public get numa() {
+        return this._numa;
     }
 
     public get logLevel() {
@@ -328,7 +357,7 @@ export class Llama {
     public async loadModel(options: LlamaModelOptions) {
         this._ensureNotDisposed();
 
-        return await withLock(this._memoryLock, LlamaLocks.loadToMemory, options.loadSignal, async () => {
+        return await withLock([this._memoryLock, LlamaLocks.loadToMemory], options.loadSignal, async () => {
             this._ensureNotDisposed();
 
             const preventDisposalHandle = this._backendDisposeGuard.createPreventDisposalHandle();
@@ -345,8 +374,11 @@ export class Llama {
      * @see [Using a JSON Schema Grammar](https://node-llama-cpp.withcat.ai/guide/grammar#json-schema) tutorial
      * @see [Reducing Hallucinations When Using JSON Schema Grammar](https://node-llama-cpp.withcat.ai/guide/grammar#reducing-json-schema-hallucinations) tutorial
      */
-    public async createGrammarForJsonSchema<const T extends GbnfJsonSchema>(schema: Readonly<T>) {
-        return new LlamaJsonSchemaGrammar<T>(this, schema);
+    public async createGrammarForJsonSchema<
+        const T extends GbnfJsonSchema<Defs>,
+        const Defs extends GbnfJsonDefList<Defs> = Record<any, any>
+    >(schema: Readonly<T> & GbnfJsonSchema<Defs>) {
+        return new LlamaJsonSchemaGrammar<T, Defs>(this, schema);
     }
     /* eslint-enable @stylistic/max-len */
 
@@ -436,7 +468,7 @@ export class Llama {
             }
 
             try {
-                const transformedLogLevel = getTransformedLogLevel(level, message);
+                const transformedLogLevel = getTransformedLogLevel(level, message, this.gpu);
                 if (LlamaLogLevelGreaterThanOrEqual(transformedLogLevel, this._logLevel))
                     this._logger(transformedLogLevel, message);
             } catch (err) {
@@ -446,6 +478,9 @@ export class Llama {
 
         this._previousLog = message;
         this._previousLogLevel = level;
+
+        if (!this._hadErrorLogs && LlamaLogLevelGreaterThan(level, LlamaLogLevel.error))
+            this._hadErrorLogs = true;
     }
 
     /** @internal */
@@ -464,11 +499,12 @@ export class Llama {
 
     /** @internal */
     public static async _create({
-        bindings, bindingPath, buildType, buildMetadata, logLevel, logger, vramPadding, ramPadding, maxThreads, skipLlamaInit = false,
-        debug
+        bindings, bindingPath, extBackendsPath, buildType, buildMetadata, logLevel, logger, vramPadding, ramPadding, maxThreads,
+        skipLlamaInit = false, debug, numa
     }: {
         bindings: BindingModule,
         bindingPath: string,
+        extBackendsPath?: string,
         buildType: "localBuild" | "prebuilt",
         buildMetadata: BuildMetadataFile,
         logLevel: LlamaLogLevel,
@@ -477,7 +513,8 @@ export class Llama {
         vramPadding: number | ((totalVram: number) => number),
         ramPadding: number | ((totalRam: number) => number),
         skipLlamaInit?: boolean,
-        debug: boolean
+        debug: boolean,
+        numa?: LlamaNuma
     }) {
         const vramOrchestrator = new MemoryOrchestrator(() => {
             const {total, used, unifiedSize} = bindings.getGpuVramInfo();
@@ -525,6 +562,7 @@ export class Llama {
         const llama = new Llama({
             bindings,
             bindingPath,
+            extBackendsPath,
             buildType,
             cmakeOptions: buildMetadata.buildOptions.customCmakeOptions,
             llamaCppRelease: {
@@ -534,13 +572,15 @@ export class Llama {
             logLevel,
             logger,
             debug,
+            numa,
             buildGpu: buildMetadata.buildOptions.gpu,
             vramOrchestrator,
             maxThreads,
             vramPadding: vramOrchestrator.reserveMemory(0),
             ramOrchestrator,
             ramPadding: resolvedRamPadding,
-            swapOrchestrator
+            swapOrchestrator,
+            skipLlamaInit
         });
 
         if (llama.gpu === false || vramPadding === 0) {
@@ -629,7 +669,7 @@ function logMessageIsOnlyDots(message: string | null) {
     return true;
 }
 
-function getTransformedLogLevel(level: LlamaLogLevel, message: string): LlamaLogLevel {
+function getTransformedLogLevel(level: LlamaLogLevel, message: string, gpu: BuildGpu): LlamaLogLevel {
     if (level === LlamaLogLevel.warn && message.endsWith("the full capacity of the model will not be utilized"))
         return LlamaLogLevel.info;
     else if (level === LlamaLogLevel.warn && message.startsWith("ggml_metal_init: skipping kernel_") && message.endsWith("(not supported)"))
@@ -639,6 +679,20 @@ function getTransformedLogLevel(level: LlamaLogLevel, message: string): LlamaLog
     else if (level === LlamaLogLevel.info && message.startsWith("load_backend: loaded "))
         return LlamaLogLevel.log;
     else if (level === LlamaLogLevel.warn && message.startsWith("make_cpu_buft_list: disabling extra buffer types"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("llama_context: non-unified KV cache requires ggml_set_rows() - forcing unified KV cache"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("llama_kv_cache_unified: LLAMA_SET_ROWS=0, using old ggml_cpy() method for backwards compatibility"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("init: embeddings required but some input tokens were not marked as outputs -> overriding"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("load: special_eog_ids contains both '<|return|>' and '<|call|>' tokens, removing '<|end|>' token from EOG list"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("llama_init_from_model: model default pooling_type is [0], but [-1] was specified"))
+        return LlamaLogLevel.info;
+    else if (gpu === false && level === LlamaLogLevel.warn && message.startsWith("llama_adapter_lora_init_impl: lora for '") && message.endsWith("' cannot use buft 'CPU_REPACK', fallback to CPU"))
+        return LlamaLogLevel.info;
+    else if (gpu === "metal" && level === LlamaLogLevel.warn && message.startsWith("ggml_metal_device_init: tensor API disabled for"))
         return LlamaLogLevel.info;
 
     return level;
