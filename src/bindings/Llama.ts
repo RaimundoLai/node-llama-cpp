@@ -16,6 +16,7 @@ import {
     LlamaLogLevelGreaterThan, LlamaLogLevelGreaterThanOrEqual, LlamaNuma
 } from "./types.js";
 import {MemoryOrchestrator, MemoryReservation} from "./utils/MemoryOrchestrator.js";
+import {registerDisposeBeforeExit, unregisterDisposeBeforeExit} from "./utils/disposeBeforeExit.js";
 
 export const LlamaLogLevelToAddonLogLevel: ReadonlyMap<LlamaLogLevel, number> = new Map([
     [LlamaLogLevel.disabled, 0],
@@ -35,6 +36,7 @@ const defaultCPUMinThreadSplitterThreads = 4;
 export class Llama {
     /** @internal */ public readonly _bindings: BindingModule;
     /** @internal */ public readonly _backendDisposeGuard = new DisposeGuard();
+    /** @internal */ private readonly _selfWeakRef: WeakRef<Llama>;
     /** @internal */ public readonly _memoryLock = {};
     /** @internal */ public readonly _consts: ReturnType<BindingModule["getConsts"]>;
     /** @internal */ public readonly _vramOrchestrator: MemoryOrchestrator;
@@ -106,6 +108,7 @@ export class Llama {
         this._logLevel = this._debug
             ? LlamaLogLevel.debug
             : (logLevel ?? LlamaLogLevel.debug);
+        this._selfWeakRef = new WeakRef(this);
 
         const previouslyLoaded = bindings.markLoaded();
 
@@ -137,7 +140,7 @@ export class Llama {
         this._supportsMmap = bindings.getSupportsMmap();
         this._gpuSupportsMmap = bindings.getGpuSupportsMmap();
         this._supportsMlock = bindings.getSupportsMlock();
-        this._mathCores = bindings.getMathCores();
+        this._mathCores = Math.floor(bindings.getMathCores());
         this._consts = bindings.getConsts();
         this._vramOrchestrator = vramOrchestrator;
         this._vramPadding = vramPadding;
@@ -159,8 +162,9 @@ export class Llama {
             release: llamaCppRelease.release
         });
 
-        this._onExit = this._onExit.bind(this);
-        process.on("exit", this._onExit);
+        this._onBeforeExit = this._onBeforeExit.bind(this);
+        process.once("beforeExit", this._onBeforeExit);
+        registerDisposeBeforeExit(this._selfWeakRef);
     }
 
     public async dispose() {
@@ -171,6 +175,9 @@ export class Llama {
         this.onDispose.dispatchEvent();
         await this._backendDisposeGuard.acquireDisposeLock();
         await this._bindings.dispose();
+
+        process.off("beforeExit", this._onBeforeExit);
+        unregisterDisposeBeforeExit(this._selfWeakRef);
     }
 
     /** @hidden */
@@ -484,7 +491,7 @@ export class Llama {
     }
 
     /** @internal */
-    private _onExit() {
+    private _onBeforeExit() {
         if (this._pendingLog != null && this._pendingLogLevel != null) {
             this._callLogger(this._pendingLogLevel, this._pendingLog);
             this._pendingLog = null;
@@ -689,6 +696,10 @@ function getTransformedLogLevel(level: LlamaLogLevel, message: string, gpu: Buil
     else if (level === LlamaLogLevel.warn && message.startsWith("load: special_eog_ids contains both '<|return|>' and '<|call|>' tokens, removing '<|end|>' token from EOG list"))
         return LlamaLogLevel.info;
     else if (level === LlamaLogLevel.warn && message.startsWith("llama_init_from_model: model default pooling_type is [0], but [-1] was specified"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("llama_model_loader: direct I/O is enabled, disabling mmap"))
+        return LlamaLogLevel.info;
+    else if (level === LlamaLogLevel.warn && message.startsWith("llama_model_loader: direct I/O is not available, using mmap"))
         return LlamaLogLevel.info;
     else if (gpu === false && level === LlamaLogLevel.warn && message.startsWith("llama_adapter_lora_init_impl: lora for '") && message.endsWith("' cannot use buft 'CPU_REPACK', fallback to CPU"))
         return LlamaLogLevel.info;

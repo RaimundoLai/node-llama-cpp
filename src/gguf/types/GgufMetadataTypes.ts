@@ -12,6 +12,7 @@ export const enum GgufArchitectureType {
     starcoder = "starcoder",
     refact = "refact",
     bert = "bert",
+    modernBert = "modern-bert",
     nomicBert = "nomic-bert",
     nomicBertMoe = "nomic-bert-moe",
     neoBert = "neo-bert",
@@ -28,11 +29,14 @@ export const enum GgufArchitectureType {
     qwen3next = "qwen3next",
     qwen3vl = "qwen3vl",
     qwen3vlmoe = "qwen3vlmoe",
+    qwen35 = "qwen35",
+    qwen35moe = "qwen35moe",
     phi2 = "phi2",
     phi3 = "phi3",
     phimoe = "phimoe",
     plamo = "plamo",
     plamo2 = "plamo2",
+    plamo3 = "plamo3",
     codeshell = "codeshell",
     orion = "orion",
     internlm2 = "internlm2",
@@ -62,14 +66,17 @@ export const enum GgufArchitectureType {
     chatglm = "chatglm",
     glm4 = "glm4",
     glm4moe = "glm4moe",
+    glmDsa = "glm-dsa",
     bitnet = "bitnet",
     t5 = "t5",
     t5encoder = "t5encoder",
     jais = "jais",
     nemotron = "nemotron",
     nemotronH = "nemotron_h",
+    nemotronHMoe = "nemotron_h_moe",
     exaone = "exaone",
     exaone4 = "exaone4",
+    exaoneMoe = "exaone-moe",
     rwkv6 = "rwkv6",
     rwkv6qwen2 = "rwkv6qwen2",
     rwkv7 = "rwkv7",
@@ -105,6 +112,10 @@ export const enum GgufArchitectureType {
     rnd1 = "rnd1",
     panguEmbedded = "pangu-embedded",
     mistral3 = "mistral3",
+    mimo2 = "mimo2",
+    step35 = "step35",
+    llamaEmbed = "llama-embed",
+    maincoder = "maincoder",
     clip = "clip",
     unknown = "(unknown)"
 }
@@ -113,16 +124,17 @@ export type GgufMetadata<A extends GgufArchitectureType = GgufArchitectureType> 
     readonly general: GgufMetadataGeneral<A>,
     readonly tokenizer: GgufMetadataTokenizer
 } & (
-    GgufArchitectureType extends A ? {
-        readonly [key in GgufArchitectureType]?: key extends keyof GgufMetadataLlmToType
-            ? GgufMetadataLlmToType[key]
-            : GgufMetadataDefaultArchitectureType
-    }
-    : {
-        readonly [key in A]: key extends keyof GgufMetadataLlmToType
-            ? GgufMetadataLlmToType[key]
-            : GgufMetadataDefaultArchitectureType
-    }
+    GgufArchitectureType extends A
+        ? {
+            readonly [key in GgufArchitectureType]?: key extends keyof GgufMetadataLlmToType
+                ? GgufMetadataLlmToType[key]
+                : GgufMetadataDefaultArchitectureType
+        }
+        : {
+            readonly [key in A]: key extends keyof GgufMetadataLlmToType
+                ? GgufMetadataLlmToType[key]
+                : GgufMetadataDefaultArchitectureType
+        }
 );
 
 

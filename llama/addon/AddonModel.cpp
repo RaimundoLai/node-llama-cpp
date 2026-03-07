@@ -252,6 +252,10 @@ AddonModel::AddonModel(const Napi::CallbackInfo& info) : Napi::ObjectWrap<AddonM
             model_params.use_mmap = options.Get("useMmap").As<Napi::Boolean>().Value();
         }
 
+        if (options.Has("useDirectIo")) {
+            model_params.use_direct_io = options.Get("useDirectIo").As<Napi::Boolean>().Value();
+        }
+
         if (options.Has("useMlock")) {
             model_params.use_mlock = options.Get("useMlock").As<Napi::Boolean>().Value();
         }
@@ -358,18 +362,19 @@ void AddonModel::dispose() {
     }
 
     disposed = true;
+    
+    if (data != nullptr) {
+        auto currentData = data;
+        data = nullptr;
+        delete currentData;
+    }
+
     if (modelLoaded) {
         modelLoaded = false;
         llama_model_free(model);
 
         adjustNapiExternalMemorySubtract(Env(), loadedModelSize);
         loadedModelSize = 0;
-    }
-
-    if (data != nullptr) {
-        auto currentData = data;
-        data = nullptr;
-        delete currentData;
     }
 
     if (hasAddonExportsRef) {

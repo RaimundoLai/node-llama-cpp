@@ -97,8 +97,8 @@ jobs:
       - name: Install dependencies on Windows
         if: startsWith(matrix.config.os, 'windows')
         run: |
-          choco install cmake.install --version=3.31.1
-          choco install cmake --version=3.31.1
+          choco install cmake.install --version=4.2.1
+          choco install cmake --version=4.2.1
           choco install ninja
 
       - name: Install dependencies on Ubuntu (1)
@@ -107,9 +107,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install ninja-build libtbb-dev g++-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-arm-linux-gnueabihf gcc-arm-linux-gnueabihf
           
-          wget -c https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz
-          sudo tar --strip-components=1 -C /usr/local -xzf cmake-3.31.7-linux-x86_64.tar.gz
-          rm -f ./cmake-3.31.7-linux-x86_64.tar.gz
+          wget -c https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1-linux-x86_64.tar.gz
+          sudo tar --strip-components=1 -C /usr/local -xzf cmake-4.2.1-linux-x86_64.tar.gz
+          rm -f ./cmake-4.2.1-linux-x86_64.tar.gz
           
           which aarch64-linux-gnu-gcc
           which aarch64-linux-gnu-g++
@@ -125,31 +125,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install ninja-build libtbb-dev
           
-          wget -c https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz
-          sudo tar --strip-components=1 -C /usr/local -xzf cmake-3.31.7-linux-x86_64.tar.gz
-          rm -f ./cmake-3.31.7-linux-x86_64.tar.gz
+          wget -c https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1-linux-x86_64.tar.gz
+          sudo tar --strip-components=1 -C /usr/local -xzf cmake-4.2.1-linux-x86_64.tar.gz
+          rm -f ./cmake-4.2.1-linux-x86_64.tar.gz
           
           cmake --version
 
-      - name: Install Cuda 13.0 on Windows (1)
+      - name: Install Cuda 13.1 on Windows (1)
         if: matrix.config.name == 'Windows (1)'
-        shell: bash
-        timeout-minutes: 60
-        run: |
-          curl -Lo cuda_13.0.0_windows_network.exe https://developer.download.nvidia.com/compute/cuda/13.0.0/network_installers/cuda_13.0.0_windows_network.exe
-          
-          echo "Installing Cuda 13.0.0"
-          powershell -Command "Start-Process -FilePath cuda_13.0.0_windows_network.exe -ArgumentList '-s','-n' -Wait"
-          echo "Cuda installation finished"
-          
-          rm -f ./cuda_13.0.0_windows_network.exe
-          
-          echo "where cudart64_13.dll: $(where cudart64_13.dll)"
-          
-          echo "CUDA_PATH=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0" >> $GITHUB_ENV
-          echo "CUDA_PATH_V13_0=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0" >> $GITHUB_ENV
-          echo "CUDA_PATH_VX_Y=CUDA_PATH_V13_0" >> $GITHUB_ENV
-          echo "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0\\bin" >> $GITHUB_PATH
+        uses: Jimver/cuda-toolkit@v0.2.30
+        with:
+          cuda: '13.1.0'
+          method: 'network'
+          use-local-cache: false
 
       - name: Install Cuda 12.4 on Windows (2)
         if: matrix.config.name == 'Windows (2)'
@@ -160,11 +148,11 @@ jobs:
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
           use-local-cache: false
 
-      - name: Install Cuda 13.0 on Ubuntu (1)
+      - name: Install Cuda 13.1 on Ubuntu (1)
         if: matrix.config.name == 'Ubuntu (1)'
-        uses: Jimver/cuda-toolkit@v0.2.27
+        uses: Jimver/cuda-toolkit@v0.2.30
         with:
-          cuda: '13.0.0'
+          cuda: '13.1.0'
           method: 'network'
 
       - name: Install Cuda 12.4 on Ubuntu (2)
@@ -180,6 +168,9 @@ jobs:
         env:
           VULKAN_VERSION: 1.4.313.2
         run: |
+          # $env:VULKAN_VERSION = & curl.exe -fsSL https://vulkan.lunarg.com/sdk/latest/linux.txt
+          # Write-Host "Downloading Vulkan SDK version $env:VULKAN_VERSION"
+          
           curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
@@ -187,11 +178,20 @@ jobs:
 
       - name: Install Vulkan SDK on Ubuntu
         if: matrix.config.name == 'Ubuntu (1)'
+        env:
+          VULKAN_VERSION: 1.4.341.1
         run: |
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-          sudo apt update
-          sudo apt install vulkan-sdk
+          # export VULKAN_VERSION="$(curl -fsSL https://vulkan.lunarg.com/sdk/latest/linux.txt)"
+          # echo "Downloading Vulkan SDK version ${VULKAN_VERSION}"
+          
+          sudo apt-get update
+          sudo apt-get install xz-utils
+          curl --no-progress-meter "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkan_sdk.tar.xz" -o "/opt/vulkan-sdk.tar.xz"
+          mkdir -p "/opt/vulkan-sdk"
+          tar -Jxf "/opt/vulkan-sdk.tar.xz" --strip-components=1 -C "/opt/vulkan-sdk"
+          rm -f "/opt/vulkan-sdk.tar.xz"
+          echo "VULKAN_SDK=/opt/vulkan-sdk/x86_64" >> $GITHUB_ENV
+          echo "/opt/vulkan-sdk/x86_64/bin" >> $GITHUB_PATH
 
       - name: Install dependencies on macOS
         if: matrix.config.name == 'macOS x64' || matrix.config.name == 'macOS arm64'
@@ -199,6 +199,7 @@ jobs:
           brew install cmake ninja
           alias make=cmake
           cmake --version
+          uname -mprs
 
       - name: Setup & Build
         id: build
