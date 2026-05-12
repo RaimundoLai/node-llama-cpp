@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,7 +34,7 @@ jobs:
         
       - name: Install dependencies
         run: |
-          choco install cmake -y
+          choco install cmake ninja -y
           npm install -g cmake-js
           npm install tar
           
@@ -51,7 +51,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -101,7 +101,7 @@ jobs:
         
       - name: Install dependencies
         run: |
-          choco install cmake -y
+          choco install cmake ninja -y
           npm install -g cmake-js
           npm install tar
           
@@ -117,7 +117,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -155,7 +155,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -167,7 +167,7 @@ jobs:
         
       - name: Install dependencies
         run: |
-          choco install cmake -y
+          choco install cmake ninja -y
           npm install -g cmake-js
           npm install tar
 
@@ -181,7 +181,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
           
       - name: Package
@@ -219,7 +219,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -231,7 +231,7 @@ jobs:
           
       - name: Install dependencies
         run: |
-          choco install cmake -y
+          choco install cmake ninja -y
           npm install -g cmake-js
           npm install tar
 
@@ -240,7 +240,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
       - name: Package
@@ -283,7 +283,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -298,7 +298,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           # Metal Build
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch arm64 --nodeTarget 20 --gpu metal
           
@@ -339,7 +339,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -354,7 +354,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           # CPU Build (gpu false) as requested
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
@@ -404,7 +404,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -427,7 +427,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -464,7 +464,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -486,7 +486,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
           
       - name: Package
@@ -523,7 +523,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RaimundoLai/node-llama-cpp
-          ref: master
+          ref: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -540,7 +540,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
       - name: Package
