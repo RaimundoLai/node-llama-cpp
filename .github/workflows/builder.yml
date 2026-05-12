@@ -51,7 +51,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -117,7 +117,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -181,7 +181,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
           
       - name: Package
@@ -240,7 +240,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
       - name: Package
@@ -298,7 +298,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           # Metal Build
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch arm64 --nodeTarget 20 --gpu metal
           
@@ -354,7 +354,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           # CPU Build (gpu false) as requested
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
@@ -427,7 +427,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
           
       - name: Package
@@ -486,7 +486,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
           
       - name: Package
@@ -540,7 +540,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          node ./dist/cli/cli.js source download --release b8952 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
           
       - name: Package
