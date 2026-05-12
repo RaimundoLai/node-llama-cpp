@@ -31,8 +31,13 @@ export type BindingModule = {
             ranking?: boolean,
             threads?: number,
             performanceTracking?: boolean,
+            kvCacheKeyType?: number,
+            kvCacheValueType?: number,
             swaFullCache?: boolean
         }): AddonContext
+    },
+    AddonContextSequenceCheckpoint: {
+        new (): AddonContextSequenceCheckpoint
     },
     AddonGrammar: {
         new (grammarPath: string, params?: {
@@ -159,7 +164,18 @@ export type AddonContext = {
     ensureDraftContextIsCompatibleForSpeculative(draftContext: AddonContext): void,
     saveSequenceStateToFile(filePath: string, sequenceId: number, tokens: Uint32Array): Promise<number>,
     loadSequenceStateFromFile(filePath: string, sequenceId: number, maxContextSize: number): Promise<Uint32Array>,
-    setLoras(loras: AddonModelLora[], scales: number[]): void
+    setLoras(loras: AddonModelLora[], scales: number[]): void,
+
+    restoreCheckpoint(checkpoint: AddonContextSequenceCheckpoint, maxPosIndex: number): Promise<boolean>
+};
+
+export type AddonContextSequenceCheckpoint = {
+    init(context: AddonContext, sequenceId: number): Promise<void>,
+    dispose(): void,
+
+    get size(): number,
+    get minPos(): number,
+    get maxPos(): number
 };
 
 export type BatchLogitIndex = number & {

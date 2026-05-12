@@ -8,6 +8,7 @@ import {getBinariesGithubRelease} from "./bindings/utils/binariesGithubRelease.j
 import {
     nodeLlamaCppGpuOptions, LlamaLogLevel, LlamaLogLevelValues, parseNodeLlamaCppGpuOption, nodeLlamaCppGpuOffStringOptions
 } from "./bindings/types.js";
+import type {NodeLlamaCppPostinstallBehavior} from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,11 +21,13 @@ export const llamaPrebuiltBinsDirectory = path.join(__dirname, "..", "bins");
 export const llamaLocalBuildBinsDirectory = path.join(llamaDirectory, "localBuilds");
 export const llamaBinsGrammarsDirectory = path.join(__dirname, "..", "llama", "grammars");
 export const projectTemplatesDirectory = path.join(__dirname, "..", "templates");
+export const localTempDirectory = path.join(__dirname, "..", ".temp");
 export const packedProjectTemplatesDirectory = path.join(projectTemplatesDirectory, "packed");
 export const llamaCppDirectory = path.join(llamaDirectory, "llama.cpp");
 export const llamaCppGrammarsDirectory = path.join(llamaDirectory, "llama.cpp", "grammars");
 export const tempDownloadDirectory = path.join(os.tmpdir(), "node-llama-cpp", nanoid());
 export const cliHomedirDirectory = path.join(os.homedir(), ".node-llama-cpp");
+export const cliHomedirTempDirectory = path.join(os.homedir(), ".node-llama-cpp", ".temp");
 export const chatCommandHistoryFilePath = path.join(cliHomedirDirectory, ".chat_repl_history");
 export const cliModelsDirectory = path.join(cliHomedirDirectory, "models");
 export const lastBuildInfoJsonPath = path.join(llamaDirectory, "lastBuild.json");
@@ -73,6 +76,15 @@ export const defaultLlamaCppDebugMode = env.get("NODE_LLAMA_CPP_DEBUG")
 export const defaultSkipDownload = env.get("NODE_LLAMA_CPP_SKIP_DOWNLOAD")
     .default("false")
     .asBool();
+
+// set via a `--node-llama-cpp-postinstall=ignoreFailedBuild` flag on an `npm install` command
+export const defaultNodeLlamaCppPostinstall = env.get("NODE_LLAMA_CPP_POSTINSTALL")
+    .default(
+        env.get("npm_config_node_llama_cpp_postinstall")
+            .default("auto")
+            .asEnum(["auto", "ignoreFailedBuild", "skip"] as const satisfies NodeLlamaCppPostinstallBehavior[])
+    )
+    .asEnum(["auto", "ignoreFailedBuild", "skip"] as const satisfies NodeLlamaCppPostinstallBehavior[]);
 export const defaultBindingTestLogLevel = env.get("NODE_LLAMA_CPP_BINDING_TEST_LOG_LEVEL")
     .default(LlamaLogLevel.error)
     .asEnum(LlamaLogLevelValues);
@@ -100,6 +112,7 @@ const documentationCliUrl = documentationUrl + "/cli";
 export const documentationPageUrls = {
     CUDA: documentationUrl + "/guide/CUDA",
     Vulkan: documentationUrl + "/guide/Vulkan",
+    BuildingFromSource: documentationUrl + "/guide/building-from-source",
     CLI: {
         index: documentationCliUrl,
         Pull: documentationCliUrl + "/pull",
@@ -122,7 +135,8 @@ export const documentationPageUrls = {
         }
     },
     troubleshooting: {
-        RosettaIllegalHardwareInstruction: documentationUrl + "/guide/troubleshooting#illegal-hardware-instruction"
+        RosettaIllegalHardwareInstruction: documentationUrl + "/guide/troubleshooting#illegal-hardware-instruction",
+        PostinstallBehavior: documentationUrl + "/guide/troubleshooting#postinstall-behavior"
     }
 } as const;
 export const newGithubIssueUrl = "https://github.com/withcatai/node-llama-cpp/issues";
