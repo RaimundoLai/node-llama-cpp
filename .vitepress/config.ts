@@ -414,7 +414,8 @@ export default defineConfig({
                         ],
                         module: ts.ModuleKind.ES2022,
                         target: ts.ScriptTarget.ES2022,
-                        moduleDetection: ts.ModuleDetectionKind.Force
+                        moduleDetection: ts.ModuleDetectionKind.Force,
+                        rootDir: undefined
                     },
                     tsModule: ts
                 }
@@ -468,6 +469,27 @@ export default defineConfig({
                 detailedView: true,
                 miniSearch: {
                     searchOptions: {
+                        fuzzy: 0.05,
+                        tokenize(query: string) {
+                            const maxRemovedSpaces = 3;
+                            const words = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+                            const terms = new Set(words);
+
+                            for (let start = 0; start < words.length; start++) {
+                                let joined = words[start]!;
+
+                                for (let removedSpaces = 1; removedSpaces <= maxRemovedSpaces; removedSpaces++) {
+                                    const nextWord = words[start + removedSpaces];
+                                    if (nextWord == null)
+                                        break;
+
+                                    joined += nextWord;
+                                    terms.add(joined);
+                                }
+                            }
+
+                            return [...terms];
+                        },
                         boostDocument(term, documentId, storedFields) {
                             const firstTitle = (storedFields?.titles as string[])?.[0];
                             if (firstTitle?.startsWith("Type Alias: "))

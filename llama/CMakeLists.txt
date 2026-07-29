@@ -85,6 +85,30 @@ else()
     set(NLC_GGML_NATIVE ON)
 endif()
 
+if (NLC_CI_MODE AND GGML_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT NLC_GGML_NATIVE)
+    find_package(CUDAToolkit)
+    if (CUDAToolkit_VERSION VERSION_LESS "13")
+        list(APPEND CMAKE_CUDA_ARCHITECTURES 50-virtual 61-virtual 70-virtual)
+        list(APPEND CMAKE_CUDA_ARCHITECTURES 75-virtual 80-virtual 86-real)
+
+        if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.8")
+            list(APPEND CMAKE_CUDA_ARCHITECTURES 89-real 90-virtual)
+        endif()
+
+        if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
+            list(APPEND CMAKE_CUDA_ARCHITECTURES 120a-real)
+        endif()
+        if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.9")
+            list(APPEND CMAKE_CUDA_ARCHITECTURES 121a-real)
+        endif()
+
+        # Remove these architectures due to low usage in CUDA 12 and because it inflates the binary size too much
+        list(REMOVE_ITEM CMAKE_CUDA_ARCHITECTURES 89-real)
+        list(REMOVE_ITEM CMAKE_CUDA_ARCHITECTURES 90-virtual)
+        message(STATUS "CUDAToolkit version: ${CUDAToolkit_VERSION}, setting CMAKE_CUDA_ARCHITECTURES to ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+endif()
+
 add_subdirectory("llama.cpp")
 include_directories("llama.cpp")
 include_directories("./llama.cpp/common")
@@ -120,8 +144,8 @@ list(REMOVE_DUPLICATES GPU_INFO_HEADERS)
 list(REMOVE_DUPLICATES GPU_INFO_SOURCES)
 list(REMOVE_DUPLICATES GPU_INFO_EXTRA_LIBS)
 
-addVariantSuffix(llama ${NLC_VARIANT})
-addVariantSuffix(ggml ${NLC_VARIANT})
+addVariantSuffix(llama "${NLC_VARIANT}")
+addVariantSuffix(ggml "${NLC_VARIANT}")
 
 file(GLOB SOURCE_FILES "addon/*.cpp" "addon/**/*.cpp" ${GPU_INFO_SOURCES})
 

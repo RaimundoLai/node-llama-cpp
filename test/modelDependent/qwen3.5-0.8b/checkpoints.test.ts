@@ -29,6 +29,9 @@ describe("qwen3.5 0.8b", () => {
                             properties: {
                                 n: {
                                     enum: [1, 2, 3, 4]
+                                },
+                                dummy: {
+                                    const: "This is a long text, I'll write it"
                                 }
                             }
                         },
@@ -48,12 +51,12 @@ describe("qwen3.5 0.8b", () => {
 
               The second word is "secret"."
             `);
-            expect(chatSession.sequence.tokenMeter.usedInputTokens).toMatchInlineSnapshot("372");
-            expect(chatSession.sequence.lastCheckpointIndex).toMatchInlineSnapshot("393");
-            expect(chatSession.sequence.nextTokenIndex).toMatchInlineSnapshot("405");
+            expect(chatSession.sequence.tokenMeter.usedInputTokens).toMatchInlineSnapshot("389");
+            expect(chatSession.sequence.lastCheckpointIndex).toMatchInlineSnapshot("425");
+            expect(chatSession.sequence.nextTokenIndex).toMatchInlineSnapshot("437");
 
             const initialMeterState = chatSession.sequence.tokenMeter.getState();
-            const res2 = await chatSession.prompt("Explain what this word means", {
+            const res2 = await chatSession.prompt("Explain what this word means. short", {
                 ...promptOptions,
                 maxTokens: 15
             });
@@ -62,12 +65,34 @@ describe("qwen3.5 0.8b", () => {
             expect(res2).to.toMatchInlineSnapshot(`
               "
 
-              The word "secret" means something that is hidden or"
+              "Secret" means something that is hidden or not known"
             `);
-            expect(diffMeterState.usedInputTokens).toMatchInlineSnapshot("73");
-            expect(diffMeterState.usedInputTokens).to.be.lessThanOrEqual(80);
-            expect(chatSession.sequence.lastCheckpointIndex).toMatchInlineSnapshot("414");
-            expect(chatSession.sequence.nextTokenIndex).toMatchInlineSnapshot("429");
+            expect(diffMeterState.usedInputTokens).toMatchInlineSnapshot("90");
+            expect(diffMeterState.usedInputTokens).to.be.lessThanOrEqual(95);
+            expect(chatSession.sequence.lastCheckpointIndex).toMatchInlineSnapshot("448");
+            expect(chatSession.sequence.nextTokenIndex).toMatchInlineSnapshot("463");
+        });
+
+        test("disposing the context asynchronously works", {timeout: 1000 * 60 * 60 * 2}, async () => {
+            const modelPath = await getModelFile("Qwen3.5-0.8B-Q8_0.gguf");
+            const llama = await getTestLlama();
+
+            const model = await llama.loadModel({
+                modelPath
+            });
+
+            for (let i = 0; i < 4; i++) {
+                const context = await model.createContext({
+                    contextSize: 4096
+                });
+                const contextSequence = context.getSequence();
+                const chatSession = new LlamaChatSession({contextSequence});
+
+                await chatSession.prompt("Tell me a short story", {maxTokens: 40});
+
+                void contextSequence.takeCheckpoint();
+                await context.dispose(); // should not crash the process
+            }
         });
     });
 });
