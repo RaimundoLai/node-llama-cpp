@@ -3,646 +3,244 @@ name: Build node-llama-cpp addons
 on:
   workflow_dispatch:
   push:
-    branches: [ builder ]
+    branches: [ builder, master ]
+
 jobs:
   # =================================================================================================
-  # Windows Builds
+  # 1. Prepare phase: Build JS and download llama.cpp source once to avoid rate limits
   # =================================================================================================
-  windows-cuda:
-    runs-on: windows-2022
-    strategy:
-      matrix:
-        cuda_version: ['12.4.0']
-        include:
-          - cuda_version: '12.4.0'
-            optimized: 'windows-cuda-1240'
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-        
-      - name: Install dependencies
-        run: |
-          choco install cmake ninja -y
-          npm install -g cmake-js
-          npm install tar
-          
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.29
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-          
-      - name: Build
-        shell: powershell
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
-          
-      - name: Package
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/${{ matrix.optimized }}.tar.gz
-          
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.optimized }}.tar.gz
-          path: artifacts/${{ matrix.optimized }}.tar.gz
-
-  windows-cuda-1302:
-    runs-on: windows-2022
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-        
-      - name: Install dependencies
-        run: |
-          choco install cmake ninja -y
-          npm install -g cmake-js
-          npm install tar
-          
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.29
-        id: cuda-toolkit
-        with:
-          cuda: '13.0.2'
-          method: 'network'
-          
-      - name: Build
-        shell: powershell
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
-          
-      - name: Package
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/windows-cuda-1302.tar.gz
-          
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-cuda-1302.tar.gz
-          path: artifacts/windows-cuda-1302.tar.gz
-
-  windows-vulkan:
-    runs-on: windows-2022
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-        
-      - name: Install dependencies
-        run: |
-          choco install cmake ninja -y
-          npm install -g cmake-js
-          npm install tar
-
-      - name: Install Vulkan SDK
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          cache: true
-
-      - name: Build
-        shell: powershell
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
-          
-      - name: Package
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/windows-vulkan.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-vulkan.tar.gz
-          path: artifacts/windows-vulkan.tar.gz
-
-  windows-no-cuda:
-    runs-on: windows-2022
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-          
-      - name: Install dependencies
-        run: |
-          choco install cmake ninja -y
-          npm install -g cmake-js
-          npm install tar
-
-      - name: Build
-        shell: powershell
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
-          
-      - name: Package
-        shell: bash
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/win-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/windows-no-cuda.tar.gz
-          
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-no-cuda.tar.gz
-          path: artifacts/windows-no-cuda.tar.gz
-
-  # =================================================================================================
-  # macOS Builds
-  # =================================================================================================
-  macos-arm64:
-    runs-on: macos-15
-    env:
-      MACOSX_DEPLOYMENT_TARGET: '12.0'
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Install dependencies
-        run: |
-          npm install -g cmake-js
-
-      - name: Build
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          # Metal Build
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch arm64 --nodeTarget 20 --gpu metal
-          
-      - name: Package
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          // Find mac-arm64 directory
-          const buildDirs = await glob('./llama/localBuilds/mac-arm64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/macos-arm64-metal.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-arm64-metal.tar.gz
-          path: artifacts/macos-arm64-metal.tar.gz
-
-  macos-intel:
-    runs-on: macos-15-intel
-    env:
-      MACOSX_DEPLOYMENT_TARGET: '12.0'
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Install dependencies
-        run: |
-          npm install -g cmake-js
-
-      - name: Build
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          # CPU Build (gpu false) as requested
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
-          
-      - name: Package
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          // Find mac-x64 directory
-          const buildDirs = await glob('./llama/localBuilds/mac-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/macos-x64-cpu.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64-cpu.tar.gz
-          path: artifacts/macos-x64-cpu.tar.gz
-
-  # =================================================================================================
-  # Linux Builds
-  # =================================================================================================
-  linux-cuda:
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        cuda_version: ['12.4.0', '13.0.2']
-        include:
-          - cuda_version: '12.4.0'
-            optimized: 'linux-cuda-1240'
-          - cuda_version: '13.0.2'
-            optimized: 'linux-cuda-1302'
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          npm install -g cmake-js
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.29
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-      - name: Build
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu cuda
-          
-      - name: Package
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/linux-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/${{ matrix.optimized }}.tar.gz
-          
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.optimized }}.tar.gz
-          path: artifacts/${{ matrix.optimized }}.tar.gz
-
-  linux-vulkan:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          npm install -g cmake-js
-
-      - name: Install Vulkan SDK
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          cache: true
-
-      - name: Build
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu vulkan
-          
-      - name: Package
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/linux-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/linux-vulkan.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-vulkan.tar.gz
-          path: artifacts/linux-vulkan.tar.gz
-
-  linux-no-cuda:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Clone node-llama-cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: RaimundoLai/node-llama-cpp
-          ref: builder
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          npm install -g cmake-js
-
-      - name: Build
-        run: |
-          npm ci
-          npm run build
-          node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
-          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch x64 --nodeTarget 20 --gpu false
-          
-      - name: Package
-        run: |
-          npx zx -y <<'EOF'
-          #!/usr/bin/env zx
-          const buildDirs = await glob('./llama/localBuilds/linux-x64*', { onlyDirectories: true });
-          if (buildDirs.length === 0) process.exit(1);
-          const buildDir = buildDirs[0];
-          const releasePath = path.join(buildDir, 'Release');
-          await fs.ensureDir("bins");
-          await fs.copy(releasePath, "bins", { overwrite: true });
-          EOF
-          mkdir -p artifacts
-          
-      - name: Create tar.gz archive
-        uses: a7ul/tar-action@v1.1.0
-        with:
-          command: c
-          cwd: bins
-          files: ./
-          outPath: artifacts/linux-no-cuda.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-no-cuda.tar.gz
-          path: artifacts/linux-no-cuda.tar.gz
-
-  # =================================================================================================
-  # Release Job
-  # =================================================================================================
-  create-update-release:
-    needs: [windows-cuda, windows-cuda-1302, windows-vulkan, windows-no-cuda, macos-arm64, macos-intel, linux-cuda, linux-vulkan, linux-no-cuda]
+  prepare-source:
+    name: Prepare Source
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install modules
+        run: npm ci
+
+      - name: Build JS dist
+        run: npm run build
+
+      - name: Download latest llama.cpp release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+
+      - name: Upload build artifact (dist)
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: "build-dist"
+          path: "dist"
+
+      - name: Upload llama.cpp artifact
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: "llama-cpp-source"
+          path: |
+            llama/binariesGithubRelease.json
+            llama/llama.cpp.info.json
+            llama/llama.cpp
+            llama/gitRelease.bundle
+
+  # =================================================================================================
+  # 2. Matrix build phase: Native C++ compilation using the source from the prepare phase
+  # =================================================================================================
+  build-binaries:
+    name: Build - ${{ matrix.name }}
+    needs: prepare-source
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "windows-cuda-1240"
+            os: windows-2022
+            gpu: cuda
+            cuda_version: '12.4.0'
+            arch: x64
+          - name: "windows-cuda-1302"
+            os: windows-2022
+            gpu: cuda
+            cuda_version: '13.0.2'
+            arch: x64
+          - name: "windows-vulkan"
+            os: windows-2022
+            gpu: vulkan
+            arch: x64
+          - name: "windows-no-cuda"
+            os: windows-2022
+            gpu: false
+            arch: x64
+          - name: "macos-arm64-metal"
+            os: macos-14   # Using macOS 14 to avoid strict C++ errors in Xcode 16
+            gpu: metal
+            arch: arm64
+          - name: "macos-x64-cpu"
+            os: macos-14
+            gpu: false
+            arch: x64
+          - name: "linux-cuda-1240"
+            os: ubuntu-22.04
+            gpu: cuda
+            cuda_version: '12.4.0'
+            arch: x64
+          - name: "linux-cuda-1302"
+            os: ubuntu-22.04
+            gpu: cuda
+            cuda_version: '13.0.2'
+            arch: x64
+          - name: "linux-vulkan"
+            os: ubuntu-22.04
+            gpu: vulkan
+            arch: x64
+          - name: "linux-no-cuda"
+            os: ubuntu-22.04
+            gpu: false
+            arch: x64
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-dist
+          path: dist
+
+      - name: Download llama.cpp artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: llama-cpp-source
+          path: llama
+
+      # --- Pre-install: Setup environment and dependencies ---------------------------------------
+      - name: Setup Dependencies (Windows)
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          choco install cmake.install --version=4.2.1 -y
+          choco install cmake --version=4.2.1 -y
+          choco install ninja -y
+          npm install -g cmake-js tar
+
+      - name: Setup Dependencies (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libtbb-dev
+          wget -c https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1-linux-x86_64.tar.gz
+          sudo tar --strip-components=1 -C /usr/local -xzf cmake-4.2.1-linux-x86_64.tar.gz
+          npm install -g cmake-js
+
+      - name: Setup Dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install cmake ninja
+          npm install -g cmake-js
+
+      - name: Install CUDA Toolkit
+        if: matrix.gpu == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.30
+        with:
+          cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          use-local-cache: false
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.gpu == 'vulkan' && startsWith(matrix.os, 'windows')
+        shell: powershell
+        env:
+          VULKAN_VERSION: 1.4.313.2
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Vulkan SDK (Ubuntu)
+        if: matrix.gpu == 'vulkan' && startsWith(matrix.os, 'ubuntu')
+        env:
+          VULKAN_VERSION: 1.4.341.1
+        run: |
+          sudo apt-get update && sudo apt-get install xz-utils -y
+          curl --no-progress-meter "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkan_sdk.tar.xz" -o "/opt/vulkan-sdk.tar.xz"
+          mkdir -p "/opt/vulkan-sdk"
+          tar -Jxf "/opt/vulkan-sdk.tar.xz" --strip-components=1 -C "/opt/vulkan-sdk"
+          echo "VULKAN_SDK=/opt/vulkan-sdk/x86_64" >> $GITHUB_ENV
+          echo "/opt/vulkan-sdk/x86_64/bin" >> $GITHUB_PATH
+
+      # --- Core Compilation ----------------------------------------------------------------------
+      - name: Build Binary
+        shell: bash
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm ci
+          # Get exact Node.js version (e.g., 22.11.0) to ensure correct headers
+          NODE_FULL_VER=$(node -v | sed 's/v//')
+          node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch ${{ matrix.arch }} --nodeTarget $NODE_FULL_VER --gpu ${{ matrix.gpu }}
+
+      # --- Artifact Extraction (Only .node, .dll, .dylib, .so) -----------------------------------
+      - name: Extract Binaries (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "bins" | Out-Null
+          Get-ChildItem -Path "llama\localBuilds" -Recurse -Include *.node,*.dll,*.dylib,*.so | Where-Object { $_.DirectoryName -match "Release" } | Copy-Item -Destination "bins\" -Force
+
+      - name: Extract Binaries (Unix)
+        if: '!startsWith(matrix.os, 'windows')'
+        shell: bash
+        run: |
+          mkdir -p bins
+          find llama/localBuilds -path "*/Release/*" -type f \( -name "*.node" -o -name "*.dll" -o -name "*.dylib" -o -name "*.so" \) -exec cp {} bins/ \;
+
+      - name: Create tar.gz archive
+        uses: a7ul/tar-action@v1.1.0
+        with:
+          command: c
+          cwd: bins
+          files: ./
+          outPath: ${{ matrix.name }}.tar.gz
+
+      - name: Upload binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}.tar.gz
+          path: ${{ matrix.name }}.tar.gz
+
+  # =================================================================================================
+  # 3. Release phase: Collect all artifacts and create a GitHub Release
+  # =================================================================================================
+  create-release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          
-      - name: List artifacts
-        run: ls -R artifacts/
-        
+
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-        
+
       - name: Create timestamped Release
-        uses: softprops/action-gh-release@v1
-        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ steps.date.outputs.date }}
           name: node-llama-cpp builds (${{ steps.date.outputs.date }})
           body: |
-            node-llama-cpp addon builds
+            Streamlined node-llama-cpp addons (contains only .node, .dll, .so, .dylib)
             Build date: ${{ steps.date.outputs.date }}
-            
-            **Windows**
-            - CUDA: 12.4, 13.0
-            - Vulkan
-            - CPU (No CUDA)
-            
-            **macOS**
-            - ARM64 (Metal)
-            - Intel (CPU)
-            
-            **Linux**
-            - CUDA: 12.4, 13.0
-            - Vulkan
-            - CPU (No CUDA)
-          files: |
-            artifacts/**/*.tar.gz
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Update Latest Release
-        uses: softprops/action-gh-release@v1
-        if: github.event_name != 'pull_request'
-        with:
-          tag_name: latest
-          name: Latest node-llama-cpp builds
-          body: |
-            Latest node-llama-cpp addon builds.
-            Last updated: ${{ steps.date.outputs.date }}
-            
-            **Windows**
-            - CUDA: 12.4, 13.0
-            - Vulkan
-            - CPU (No CUDA)
-            
-            **macOS**
-            - ARM64 (Metal)
-            - Intel (CPU)
-            
-            **Linux**
-            - CUDA: 12.4, 13.0
-            - Vulkan
-            - CPU (No CUDA)
-          files: |
-            artifacts/**/*.tar.gz
+          files: artifacts/**/*.tar.gz
           draft: false
           prerelease: false
         env:
