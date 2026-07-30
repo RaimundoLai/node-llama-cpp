@@ -24,10 +24,10 @@ jobs:
       - name: Build JS dist
         run: npm run build
 
-      - name: Download latest llama.cpp release
+      - name: Download llama.cpp release b10068
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node ./dist/cli/cli.js source download --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+        run: node ./dist/cli/cli.js source download --release b10068 --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
 
       - name: Upload build artifact (dist)
         uses: actions/upload-artifact@v4
@@ -183,7 +183,6 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
           npm ci
-          # Get exact Node.js version (e.g., 22.11.0) to ensure correct headers
           NODE_FULL_VER=$(node -v | sed 's/v//')
           node ./dist/cli/cli.js source build --ciMode --noUsageExample --arch ${{ matrix.arch }} --nodeTarget $NODE_FULL_VER --gpu ${{ matrix.gpu }}
 
