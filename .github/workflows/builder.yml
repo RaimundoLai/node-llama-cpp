@@ -27,7 +27,7 @@ jobs:
       - name: Download latest llama.cpp release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node ./dist/cli/cli.js source download --release latest --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
+        run: node ./dist/cli/cli.js source download --skipBuild --noBundle --noUsageExample --updateBinariesReleaseMetadataAndSaveGitBundle
 
       - name: Upload build artifact (dist)
         uses: actions/upload-artifact@v4
@@ -77,11 +77,11 @@ jobs:
             gpu: false
             arch: x64
           - name: "macos-arm64-metal"
-            os: macos-14   # Using macOS 14 to avoid strict C++ errors in Xcode 16
+            os: macos-15
             gpu: metal
             arch: arm64
           - name: "macos-x64-cpu"
-            os: macos-14
+            os: macos-15-intel
             gpu: false
             arch: x64
           - name: "linux-cuda-1240"
