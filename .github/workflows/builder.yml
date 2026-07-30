@@ -196,7 +196,7 @@ jobs:
           Get-ChildItem -Path "llama\localBuilds" -Recurse -Include *.node,*.dll,*.dylib,*.so | Where-Object { $_.DirectoryName -match "Release" } | Copy-Item -Destination "bins\" -Force
 
       - name: Extract Binaries (Unix)
-        if: '!startsWith(matrix.os, 'windows')'
+        if: "!startsWith(matrix.os, 'windows')"
         shell: bash
         run: |
           mkdir -p bins
