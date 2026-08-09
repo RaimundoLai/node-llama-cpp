@@ -68,7 +68,7 @@
     "clean": "rm -rf ./node_modules ./dist ./tsconfig.tsbuildinfo ./test/.models ./docs/api ./docs/api-overrides ./templates/packed",
     "docs:generateTypedoc": "typedoc && rimraf ./docs/api/index.md ./docs/api/globals.md ./docs/api/functions/LlamaText.md",
     "docs:dev": "npm run docs:generateTypedoc && vitepress dev --cors",
-    "docs:build": "npm run docs:generateTypedoc && vitepress build",
+    "docs:build": "npm run docs:generateTypedoc && NODE_OPTIONS=\"--max-old-space-size=8192\" vitepress build",
     "docs:preview": "npm run docs:generateTypedoc && vitepress preview"
   },
   "repository": {
@@ -199,7 +199,7 @@
     "ignore": "^7.0.4",
     "ipull": "^3.9.5",
     "is-unicode-supported": "^2.1.0",
-    "lifecycle-utils": "^3.1.1",
+    "lifecycle-utils": "^4.0.1",
     "log-symbols": "^7.0.1",
     "nanoid": "^5.1.6",
     "node-addon-api": "^8.6.0",
@@ -223,7 +223,7 @@
       "optional": true
     }
   },
-  "optionalDependencies": {
+  "_optionalDependencies": {
     "@node-llama-cpp/linux-arm64": "0.1.0",
     "@node-llama-cpp/linux-armv7l": "0.1.0",
     "@node-llama-cpp/linux-riscv64": "0.1.0",

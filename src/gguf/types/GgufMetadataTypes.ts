@@ -198,7 +198,8 @@ export enum GgufFileType {
     MOSTLY_TQ2_0 = 37,
     MOSTLY_MXFP4_MOE = 38,
     MOSTLY_NVFP4 = 39,
-    MOSTLY_Q1_0 = 40
+    MOSTLY_Q1_0 = 40,
+    MOSTLY_Q2_0 = 41
 }
 
 
@@ -239,6 +240,11 @@ export type GgufMetadataGeneral<A extends GgufArchitectureType = GgufArchitectur
     readonly url?: string,
 
     /**
+     * URL to the model's repository. This can be a GitHub repo, a paper, etc.
+     */
+    readonly repo_url?: string,
+
+    /**
      * free-form description of the model including anything that isn't
      * covered by the other fields
      */
@@ -264,6 +270,12 @@ export type GgufMetadataGeneral<A extends GgufArchitectureType = GgufArchitectur
          * URL to the source of the model. Can be a GitHub repo, a paper, etc.
          */
         readonly url?: string,
+
+        /**
+         * URL to the model's repository. This can be a GitHub repo, a paper, etc.
+         */
+        readonly repo_url?: string,
+
         readonly huggingface?: {
             readonly repository?: string
         }

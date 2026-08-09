@@ -1,5 +1,5 @@
 import path from "path";
-import {acquireLock, AsyncDisposeAggregator, DisposeAggregator, DisposedError, EventRelay, Lock, withLock} from "lifecycle-utils";
+import {acquireLock, AsyncDisposeAggregator, DisposedError, EventRelay, Lock, registerFinalizer, withLock} from "lifecycle-utils";
 import {removeNullFields} from "../../utils/removeNullFields.js";
 import {Token} from "../../types.js";
 import {AddonContext, AddonModelLora, BatchLogitIndex} from "../../bindings/AddonTypes.js";
@@ -87,6 +87,7 @@ export class LlamaContext {
     /** @internal */ private readonly _disposeAggregator = new AsyncDisposeAggregator();
     /** @internal */ private readonly _modelPreventDisposalHandle: DisposalPreventionHandle;
     /** @internal */ private readonly _loraAdapters = new Set<AddonModelLora>();
+    /** @internal */ public readonly _sequenceGcRegistry: FinalizationRegistry<number>;
     /** @internal */ public _vramConsumptionMarking?: MemoryMarking;
     /** @internal */ public _ramConsumptionMarking?: MemoryMarking;
     /** @internal */ private _nextGeneratedSequenceId = 0;
@@ -184,17 +185,19 @@ export class LlamaContext {
 
         this._reclaimUnusedSequenceId = this._reclaimUnusedSequenceId.bind(this);
         this._freeReservedThreads = this._freeReservedThreads.bind(this);
+        this._sequenceGcRegistry = new FinalizationRegistry(this._reclaimUnusedSequenceId);
 
         this._disposeAggregator.add(() => {
             this._disposed = true;
         });
         this._disposeAggregator.add(this._onReclaimUnusedSequenceId);
         this._disposeAggregator.add(this.onDispose.dispatchEvent);
-        this._disposeAggregator.add(
-            this.model.onDispose.createListener(
-                disposeContextIfReferenced.bind(null, new WeakRef(this))
-            )
+
+        const onModelDisposeListener = this.model.onDispose.createListener(
+            disposeContextIfReferenced.bind(null, new WeakRef(this))
         );
+        this._disposeAggregator.add(onModelDisposeListener);
+        this._disposeAggregator.add(registerFinalizer(this, onModelDisposeListener));
 
         this._disposeAggregator.add(async () => {
             await this._backendContextDisposeGuard.acquireDisposeLock();
@@ -749,13 +752,17 @@ export class LlamaContext {
         if (this._disposed)
             return;
 
-        void withLock([this as LlamaContext, "context"], async () => {
+        return withLock([this as LlamaContext, "context"], async () => {
             if (this._disposed)
                 return;
 
-            this._ctx.disposeSequence(sequenceId);
-            this._unusedSequenceIds.push(sequenceId);
-            this._onReclaimUnusedSequenceId.dispatchEvent();
+            try {
+                this._ctx.disposeSequence(sequenceId);
+                this._unusedSequenceIds.push(sequenceId);
+                this._onReclaimUnusedSequenceId.dispatchEvent();
+            } catch (err) {
+                this._llama._log(LlamaLogLevel.warn, `Failed to reclaim unused sequence ID ${sequenceId}: ${err}`);
+            }
         });
     }
 
@@ -901,10 +908,10 @@ export class LlamaContext {
             : Boolean(flashAttentionOption);
         const kvCacheKeyType = options.experimentalKvCacheKeyType === "currentQuant"
             ? _model.fileInsights.dominantTensorType ?? _model.defaultContextKvCacheKeyType
-            : resolveGgmlTypeOption(options.experimentalKvCacheKeyType) ?? _model.defaultContextKvCacheKeyType;
+            : resolveGgmlTypeOption(options.experimentalKvCacheKeyType, _model._llama) ?? _model.defaultContextKvCacheKeyType;
         const kvCacheValueType = options.experimentalKvCacheValueType === "currentQuant"
             ? _model.fileInsights.dominantTensorType ?? _model.defaultContextKvCacheValueType
-            : resolveGgmlTypeOption(options.experimentalKvCacheValueType) ?? _model.defaultContextKvCacheValueType;
+            : resolveGgmlTypeOption(options.experimentalKvCacheValueType, _model._llama) ?? _model.defaultContextKvCacheValueType;
         const swaFullCache = options.swaFullCache ?? _model.defaultContextSwaFullCache;
         const loraOptions = typeof options.lora === "string"
             ? {adapters: [{filePath: options.lora}]} satisfies LlamaContextOptions["lora"]
@@ -1067,14 +1074,13 @@ export class LlamaContext {
 
 export class LlamaContextSequence {
     /** @internal */ private readonly _sequenceId: number;
-    /** @internal */ private readonly _gcRegistry: FinalizationRegistry<number>;
     /** @internal */ private readonly _context: LlamaContext;
     /** @internal */ private readonly _contextShift: Required<ContextShiftOptions>;
     /** @internal */ private readonly _tokenPredictor?: TokenPredictor;
     /** @internal */ private readonly _checkpoints = new LlamaContextSequenceCheckpoints();
     /** @internal */ private readonly _checkpointOptions: Required<SequenceCheckpointOptions>;
     /** @internal */ private readonly _tokenMeter: TokenMeter;
-    /** @internal */ private readonly _disposeAggregator = new DisposeAggregator();
+    /** @internal */ private readonly _disposeAggregator = new AsyncDisposeAggregator({parallel: true});
     /** @internal */ private readonly _lock = {};
     /** @internal */ private _resetTokenPredictor: boolean = false;
     /** @internal */ private _tokenPredictorOwner: {} = {};
@@ -1112,34 +1118,34 @@ export class LlamaContextSequence {
             interval: checkpoints?.interval ?? defaultCheckpointOptions.interval,
             maxMemory: checkpoints?.maxMemory ?? defaultCheckpointOptions.maxMemory
         };
-        this._gcRegistry = new FinalizationRegistry(this._context._reclaimUnusedSequenceId);
 
-        this._gcRegistry.register(this, sequenceId, this);
-        this._disposeAggregator.add(() => this._gcRegistry.unregister(this));
+        this._context._sequenceGcRegistry.register(this, sequenceId, this);
+        this._disposeAggregator.add(() => void this._context._sequenceGcRegistry.unregister(this));
 
         this._disposeAggregator.add(this.onDispose.dispatchEvent);
 
-        this._disposeAggregator.add(
-            this.model.onDispose.createListener(
-                disposeContextSequenceIfReferenced.bind(null, new WeakRef(this))
-            )
+        const onContextDisposeListener = this.context.onDispose.createListener(
+            disposeContextSequenceIfReferenced.bind(null, new WeakRef(this))
         );
-        this._disposeAggregator.add(() => {
+        this._disposeAggregator.add(onContextDisposeListener);
+        this._disposeAggregator.add(registerFinalizer(this, onContextDisposeListener));
+
+        this._disposeAggregator.add(async () => {
             this._checkpoints.clearAllCheckpoints();
-            this._context._reclaimUnusedSequenceId(this._sequenceId);
+            await this._context._reclaimUnusedSequenceId(this._sequenceId);
         });
 
         if (this._tokenPredictor != null)
-            this._disposeAggregator.add(this._tokenPredictor);
+            this._disposeAggregator.add(() => void this._tokenPredictor?.dispose());
 
         this._takeIntervalCheckpointIfNeededAfterBatch = this._takeIntervalCheckpointIfNeededAfterBatch.bind(this);
     }
 
-    public dispose() {
+    public async dispose() {
         if (this._disposed)
             return;
 
-        this._disposeAggregator.dispose();
+        await this._disposeAggregator.dispose();
 
         this._contextTokens.length = 0;
 
@@ -1147,8 +1153,16 @@ export class LlamaContextSequence {
     }
 
     /** @hidden */
-    public [Symbol.dispose]() {
+    public [Symbol.asyncDispose]() {
         return this.dispose();
+    }
+
+    /**
+     * @deprecated Use `[Symbol.asyncDispose]()` instead
+     * @hidden
+     */
+    public [Symbol.dispose]() {
+        void this.dispose();
     }
 
     public get disposed() {
