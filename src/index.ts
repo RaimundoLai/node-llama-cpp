@@ -65,6 +65,7 @@ import {FunctionaryChatWrapper} from "./chatWrappers/FunctionaryChatWrapper.js";
 import {GemmaChatWrapper} from "./chatWrappers/GemmaChatWrapper.js";
 import {Gemma4ChatWrapper} from "./chatWrappers/Gemma4ChatWrapper.js";
 import {HarmonyChatWrapper} from "./chatWrappers/HarmonyChatWrapper.js";
+import {MuseChatWrapper} from "./chatWrappers/MuseChatWrapper.js";
 import {SeedChatWrapper} from "./chatWrappers/SeedChatWrapper.js";
 import {TemplateChatWrapper, type TemplateChatWrapperOptions} from "./chatWrappers/generic/TemplateChatWrapper.js";
 import {
@@ -97,6 +98,7 @@ import {
 import {type ModelDownloadEndpoints} from "./utils/modelDownloadEndpoints.js";
 import {jsonDumps} from "./chatWrappers/utils/jsonDumps.js";
 import {experimentalChunkDocument} from "./evaluator/utils/chunkDocument.js";
+import {ggufFileQuantNames} from "./gguf/utils/ggufQuantNames.js";
 
 import {
     type ChatHistoryItem, type ChatModelFunctionCall, type ChatModelSegmentType, type ChatModelSegment, type ChatModelFunctions,
@@ -239,6 +241,7 @@ export {
     GemmaChatWrapper,
     Gemma4ChatWrapper,
     HarmonyChatWrapper,
+    MuseChatWrapper,
     SeedChatWrapper,
     TemplateChatWrapper,
     type TemplateChatWrapperOptions,
@@ -346,5 +349,6 @@ export {
     type CombinedModelDownloaderOptions,
     jsonDumps,
     type OverridesObject,
-    experimentalChunkDocument
+    experimentalChunkDocument,
+    ggufFileQuantNames
 };

@@ -1,4 +1,4 @@
-import {acquireLock, withLock} from "lifecycle-utils";
+import {acquireLock, AsyncDisposeAggregator, withLock, registerFinalizer} from "lifecycle-utils";
 import bytes from "bytes";
 import {Llama} from "../../bindings/Llama.js";
 import {doesLlamaBackendNeedAddonInitLock, LlamaLocks, LlamaLogLevel} from "../../bindings/types.js";
@@ -11,6 +11,7 @@ import {getReadablePath} from "../../cli/utils/getReadablePath.js";
 import {padSafeContextSize} from "../../evaluator/LlamaContext/utils/padSafeContextSize.js";
 import {removeNullFields, removeUndefinedFields} from "../../utils/removeNullFields.js";
 import {LruCache} from "../../utils/LruCache.js";
+import {DisposalPreventionHandle, DisposeGuard} from "../../utils/DisposeGuard.js";
 import {GgufInsightsConfigurationResolver} from "./GgufInsightsConfigurationResolver.js";
 import {GgufInsightsTokens} from "./GgufInsightsTokens.js";
 import type {Promisable} from "../../utils/transformPromisable.js";
@@ -29,6 +30,7 @@ export class GgufInsights {
     /** @internal */ private _supportsRanking?: boolean;
     /** @internal */ private _dominantTensorType?: GgmlType;
     /** @internal */ private _addonMetadata?: AddonGgufMetadata;
+    /** @internal */ private _totalParameters?: number;
     /** @internal */ public _defaultUseMmap?: boolean;
     /** @internal */ public readonly _ggufFileInfo: GgufFileInfo;
     /** @internal */ private readonly _configurationResolver: GgufInsightsConfigurationResolver;
@@ -109,6 +111,12 @@ export class GgufInsights {
 
     public get modelSize() {
         return this._modelSize;
+    }
+
+    /** The total number of parameters in the model */
+    public get totalParameters() {
+        this._totalParameters ??= getTotalModelParameters(this._ggufFileInfo.fullTensorInfo ?? []);
+        return this._totalParameters;
     }
 
     public get flashAttentionSupported() {
@@ -351,7 +359,7 @@ export class GgufInsights {
             const simulatorSource = await this._resolveSimulatorSource();
             if (simulatorSource == null)
                 return null;
-    
+
             let resourceRequirements: GgufInsightsResourceRequirements;
             try {
                 resourceRequirements = await simulatorSession.estimateModelResources({
@@ -362,7 +370,7 @@ export class GgufInsights {
             } catch (error: any) {
                 throw new Error("Failed simulating model resource usage. Falling back to estimation heuristic. Error: " + (error?.message ?? String(error)));
             }
-    
+
             this._exactModelResourceRequirementsCache.set(cacheKey, resourceRequirements);
             return {...resourceRequirements};
         } finally {
@@ -827,7 +835,7 @@ export class GgufInsights {
             const simulatorSource = await this._resolveSimulatorSource();
             if (simulatorSource == null)
                 return null;
-    
+
             let contextResources: GgufInsightsResourceRequirements;
             try {
                 const paddedContextSize = padSafeContextSize(contextSize, "up");
@@ -861,7 +869,7 @@ export class GgufInsights {
                 cpuRam: contextResources.cpuRam,
                 gpuVram: contextResources.gpuVram
             } satisfies GgufInsightsResourceRequirements;
-    
+
             this._exactContextResourceRequirementsCache.set(cacheKey, resourceRequirements);
             return {...resourceRequirements};
         } finally {
@@ -1165,6 +1173,9 @@ export class GgufInsights {
 
     /** @internal */
     public _createSimulatorSession(lruCacheSize: number = 10) {
+        if (this.ggufFileInfo.metadata.general.architecture === GgufArchitectureType.clip)
+            return new GgufInsightsSimulatorSession(this._llama, lruCacheSize, new Error("Cannot simulate CLIP architecture models"));
+
         return new GgufInsightsSimulatorSession(this._llama, lruCacheSize);
     }
 
@@ -1186,12 +1197,24 @@ export class GgufInsights {
 
 export class GgufInsightsSimulatorSession {
     private readonly _llama: Llama;
-    private readonly _modelPromises: LruCache<string, Promise<AddonModel>>;
+    private readonly _modelHandlePromises: LruCache<string, Promise<SimulatorModelHandle>>;
+    private readonly _loadModelError?: Error;
     private _disposed = false;
 
-    public constructor(llama: Llama, lruCacheSize: number = 10) {
+    public constructor(llama: Llama, lruCacheSize: number = 10, loadModelError?: Error) {
         this._llama = llama;
-        this._modelPromises = new LruCache(lruCacheSize);
+        this._modelHandlePromises = new LruCache(lruCacheSize, {
+            async onDelete(key, value) {
+                try {
+                    const modelHandle = await value;
+                    await Promise.resolve(); // wait for a tick to allow any pending consumers to acquire dispose prevention handles
+                    await modelHandle.dispose();
+                } catch (err) {
+                    // do nothing
+                }
+            }
+        });
+        this._loadModelError = loadModelError;
     }
 
     public async estimateModelResources({
@@ -1203,16 +1226,28 @@ export class GgufInsightsSimulatorSession {
         gpuLayers: number,
         useMmap?: boolean
     }): Promise<GgufInsightsResourceRequirements> {
-        const model = await this._getModel({source: modelSource, gpuLayers, useMmap});
-        const memoryBreakdown = model.getMemoryBreakdown();
-        if (this._llama._shouldLog(LlamaLogLevel.debug))
-            this._llama._log(LlamaLogLevel.debug, "Simulating model resource usage. " + [
-                `gpuLayers=${gpuLayers}`,
-                `useMmap=${useMmap}`,
-                `memoryBreakdownCpuRam=${bytes(memoryBreakdown.cpuRam)}`,
-                `memoryBreakdownGpuVram=${bytes(memoryBreakdown.gpuVram)}`
-            ].join(" "));
-        return memoryBreakdown;
+        const modelHandle = await this._getModelHandle({source: modelSource, gpuLayers, useMmap});
+
+        let preventDisposalHandle: DisposalPreventionHandle;
+        try {
+            preventDisposalHandle = modelHandle.disposeGuard.createPreventDisposalHandle();
+        } catch (err) {
+            throw new Error("Model is disposed");
+        }
+
+        try {
+            const memoryBreakdown = modelHandle.model.getMemoryBreakdown();
+            if (this._llama._shouldLog(LlamaLogLevel.debug))
+                this._llama._log(LlamaLogLevel.debug, "Simulating model resource usage. " + [
+                    `gpuLayers=${gpuLayers}`,
+                    `useMmap=${useMmap}`,
+                    `memoryBreakdownCpuRam=${bytes(memoryBreakdown.cpuRam)}`,
+                    `memoryBreakdownGpuVram=${bytes(memoryBreakdown.gpuVram)}`
+                ].join(" "));
+            return memoryBreakdown;
+        } finally {
+            preventDisposalHandle.dispose();
+        }
     }
 
     public async estimateContextResources({
@@ -1240,53 +1275,65 @@ export class GgufInsightsSimulatorSession {
         kvCacheKeyType?: GgmlType,
         kvCacheValueType?: GgmlType
     }): Promise<GgufInsightsResourceRequirements> {
-        const model = await this._getModel({source: modelSource, gpuLayers, useMmap});
-        const context = new this._llama._bindings.AddonContext(model, removeUndefinedFields({
-            contextSize,
-            batchSize,
-            sequences,
-            embeddings: isEmbeddingContext,
-            flashAttention: flashAttention === "auto"
-                ? "auto"
-                : flashAttention,
-            kvCacheKeyType,
-            kvCacheValueType,
-            swaFullCache
-        } satisfies AddonContextParams));
+        const modelHandle = await this._getModelHandle({source: modelSource, gpuLayers, useMmap});
+
+        let preventDisposalHandle: DisposalPreventionHandle;
+        try {
+            preventDisposalHandle = modelHandle.disposeGuard.createPreventDisposalHandle();
+        } catch (err) {
+            throw new Error("Model is disposed");
+        }
 
         try {
-            const loadingLock = doesLlamaBackendNeedAddonInitLock(this._llama.gpu)
-                ? await acquireLock([this._llama._memoryLock, LlamaLocks.addonInit])
-                : undefined;
-            const disposeLogLevelOverride = this._llama._createLogLevelOverride(LlamaLogLevel.error);
+            const context = new this._llama._bindings.AddonContext(modelHandle.model, removeUndefinedFields({
+                contextSize,
+                batchSize,
+                sequences,
+                embeddings: isEmbeddingContext,
+                flashAttention: flashAttention === "auto"
+                    ? "auto"
+                    : flashAttention,
+                kvCacheKeyType,
+                kvCacheValueType,
+                swaFullCache
+            } satisfies AddonContextParams));
+
             try {
-                const contextLoaded = await context.init();
-                if (!contextLoaded)
-                    throw new Error("Failed to create context");
+                const loadingLock = doesLlamaBackendNeedAddonInitLock(this._llama.gpu)
+                    ? await acquireLock([this._llama._memoryLock, LlamaLocks.addonInit])
+                    : undefined;
+                const disposeLogLevelOverride = this._llama._createLogLevelOverride(LlamaLogLevel.error);
+                try {
+                    const contextLoaded = await context.init();
+                    if (!contextLoaded)
+                        throw new Error("Failed to create context");
+                } finally {
+                    disposeLogLevelOverride();
+                    loadingLock?.dispose();
+                }
+
+                const memoryBreakdown = context.getMemoryBreakdown();
+                if (this._llama._shouldLog(LlamaLogLevel.debug))
+                    this._llama._log(LlamaLogLevel.debug, "Simulating context resource usage. " + [
+                        `gpuLayers=${gpuLayers}`,
+                        `contextSize=${contextSize.toLocaleString("en-US", {notation: "compact"})}`,
+                        `batchSize=${batchSize}`,
+                        `sequences=${sequences}`,
+                        `isEmbeddingContext=${isEmbeddingContext}`,
+                        `flashAttention=${flashAttention}`,
+                        `swaFullCache=${swaFullCache}`,
+                        `kvCacheKeyType=${kvCacheKeyType}`,
+                        `kvCacheValueType=${kvCacheValueType}`,
+                        `useMmap=${useMmap}`,
+                        `memoryBreakdownCpuRam=${bytes(memoryBreakdown.cpuRam)}`,
+                        `memoryBreakdownGpuVram=${bytes(memoryBreakdown.gpuVram)}`
+                    ].join(" "));
+                return memoryBreakdown;
             } finally {
-                disposeLogLevelOverride();
-                loadingLock?.dispose();
+                await context.dispose();
             }
-            
-            const memoryBreakdown = context.getMemoryBreakdown();
-            if (this._llama._shouldLog(LlamaLogLevel.debug))
-                this._llama._log(LlamaLogLevel.debug, "Simulating context resource usage. " + [
-                    `gpuLayers=${gpuLayers}`,
-                    `contextSize=${contextSize.toLocaleString("en-US", {notation: "compact"})}`,
-                    `batchSize=${batchSize}`,
-                    `sequences=${sequences}`,
-                    `isEmbeddingContext=${isEmbeddingContext}`,
-                    `flashAttention=${flashAttention}`,
-                    `swaFullCache=${swaFullCache}`,
-                    `kvCacheKeyType=${kvCacheKeyType}`,
-                    `kvCacheValueType=${kvCacheValueType}`,
-                    `useMmap=${useMmap}`,
-                    `memoryBreakdownCpuRam=${bytes(memoryBreakdown.cpuRam)}`,
-                    `memoryBreakdownGpuVram=${bytes(memoryBreakdown.gpuVram)}`
-                ].join(" "));
-            return memoryBreakdown;
         } finally {
-            await context.dispose();
+            preventDisposalHandle.dispose();
         }
     }
 
@@ -1300,18 +1347,19 @@ export class GgufInsightsSimulatorSession {
 
         this._disposed = true;
 
-        const modelPromises = [...this._modelPromises.values()].map((modelPromise) => modelPromise.catch(() => void 0));
-        this._modelPromises.clear();
-        const loadedModels = (await Promise.all(modelPromises)).filter((model) => model != null);
+        const modelHandlePromises = [...this._modelHandlePromises.values()]
+            .map((modelHandlePromise) => modelHandlePromise.catch(() => void 0));
+        this._modelHandlePromises.clear();
+        const loadedModelHandles = (await Promise.all(modelHandlePromises)).filter((model) => model != null);
 
-        await Promise.all(loadedModels.map((model) => model.dispose().catch(() => void 0)));
+        await Promise.all(loadedModelHandles.map((modelHandle) => modelHandle.dispose()));
     }
 
     public get disposed() {
         return this._disposed;
     }
 
-    private async _getModel({
+    private async _getModelHandle({
         source,
         gpuLayers,
         useMmap = this._llama.supportsMmap
@@ -1322,26 +1370,39 @@ export class GgufInsightsSimulatorSession {
     }) {
         if (this._disposed)
             throw new Error("simulator session is disposed");
+        else if (this._loadModelError != null)
+            throw this._loadModelError;
 
-        const cacheKey = String(gpuLayers) + ":" + String(useMmap);
-        const existingModelPromise = this._modelPromises.get(cacheKey);
-        if (existingModelPromise != null)
-            return await existingModelPromise;
-
-        if (this._llama._shouldLog(LlamaLogLevel.debug))
-            this._llama._log(LlamaLogLevel.debug, `Loading model for simulator session. gpuLayers=${gpuLayers} useMmap=${useMmap}`);
-        const modelPromise = this._loadModel({
-            source,
-            gpuLayers,
-            useMmap
-        });
-        this._modelPromises.set(cacheKey, modelPromise);
+        let preventDisposalHandle: DisposalPreventionHandle;
+        try {
+            preventDisposalHandle = this._llama._backendDisposeGuard.createPreventDisposalHandle();
+        } catch (err) {
+            throw new Error("Llama instance is disposed");
+        }
 
         try {
-            return await modelPromise;
-        } catch (error) {
-            this._modelPromises.delete(cacheKey);
-            throw error;
+            const cacheKey = String(gpuLayers) + ":" + String(useMmap);
+            const existingModelPromise = this._modelHandlePromises.get(cacheKey);
+            if (existingModelPromise != null)
+                return await existingModelPromise;
+
+            if (this._llama._shouldLog(LlamaLogLevel.debug))
+                this._llama._log(LlamaLogLevel.debug, `Loading model for simulator session. gpuLayers=${gpuLayers} useMmap=${useMmap}`);
+            const modelHandlePromise = this._loadModel({
+                source,
+                gpuLayers,
+                useMmap
+            });
+            this._modelHandlePromises.set(cacheKey, modelHandlePromise);
+
+            try {
+                return await modelHandlePromise;
+            } catch (error) {
+                this._modelHandlePromises.delete(cacheKey);
+                throw error;
+            }
+        } finally {
+            preventDisposalHandle.dispose();
         }
     }
 
@@ -1377,8 +1438,49 @@ export class GgufInsightsSimulatorSession {
             loadingLock?.dispose();
         }
 
-        return model;
+        return new SimulatorModelHandle(this._llama, model);
     }
+}
+
+class SimulatorModelHandle {
+    public readonly model: AddonModel;
+    public readonly disposeGuard: DisposeGuard;
+
+    private readonly _llamaPreventDisposalHandle: DisposalPreventionHandle;
+    private readonly _disposeAggregator = new AsyncDisposeAggregator();
+
+    public constructor(llama: Llama, model: AddonModel) {
+        this.model = model;
+        this.disposeGuard = new DisposeGuard([llama._backendDisposeGuard]);
+
+        this._llamaPreventDisposalHandle = llama._backendDisposeGuard.createPreventDisposalHandle();
+        this._disposeAggregator.add(registerFinalizer(model, this._llamaPreventDisposalHandle));
+
+        const onLlamaDisposeListener = llama.onDispose.createListener(
+            disposeSimulatorModelHandleIfReferenced.bind(null, new WeakRef(this))
+        );
+        this._disposeAggregator.add(onLlamaDisposeListener);
+        this._disposeAggregator.add(registerFinalizer(model, onLlamaDisposeListener));
+
+        this._disposeAggregator.add(this._dispose.bind(this));
+    }
+
+    public async dispose() {
+        await this._disposeAggregator.dispose();
+    }
+
+    private async _dispose() {
+        await this.disposeGuard.acquireDisposeLock();
+
+        await this.model.dispose().catch(() => void 0);
+
+        await this._llamaPreventDisposalHandle.dispose();
+    }
+}
+
+function disposeSimulatorModelHandleIfReferenced(modelHandleRef: WeakRef<SimulatorModelHandle>) {
+    return modelHandleRef.deref()?.dispose()
+        .catch(() => void 0);
 }
 
 function parseTensorName(tensorName?: string): {
@@ -1922,4 +2024,18 @@ export function getDominantTensorType(tensorInfo: GgufTensorInfo[]): GgmlType | 
     }
 
     return dominantType;
+}
+
+export function getTotalModelParameters(tensorInfo: GgufTensorInfo[]) {
+    let totalParameters = 0n;
+
+    for (const tensor of tensorInfo) {
+        let tensorParameters = 1n;
+        for (const dim of tensor.dimensions ?? [])
+            tensorParameters *= BigInt(dim);
+
+        totalParameters += tensorParameters;
+    }
+
+    return Number(totalParameters);
 }

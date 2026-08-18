@@ -48,6 +48,7 @@ export const enum GgufArchitectureType {
     gemma3 = "gemma3",
     gemma3n = "gemma3n",
     gemma4 = "gemma4",
+    gemma4assistant = "gemma4-assistant",
     gemmaEmbedding = "gemma-embedding",
     starcoder2 = "starcoder2",
     mamba = "mamba",
@@ -57,15 +58,19 @@ export const enum GgufArchitectureType {
     xverse = "xverse",
     commandR = "command-r",
     cohere2 = "cohere2",
+    cohere2moe = "cohere2moe",
     dbrx = "dbrx",
     olmo = "olmo",
     olmo2 = "olmo2",
     olmoe = "olmoe",
+    museGlimmer = "muse-glimmer",
     openelm = "openelm",
     arctic = "arctic",
     deepseek = "deepseek",
     deepseek2 = "deepseek2",
     deepseek2ocr = "deepseek2-ocr",
+    deepseek32 = "deepseek32",
+    deepseek4 = "deepseek4",
     chatglm = "chatglm",
     glm4 = "glm4",
     glm4moe = "glm4moe",
@@ -88,6 +93,7 @@ export const enum GgufArchitectureType {
     granite = "granite",
     granitemoe = "granitemoe",
     granitehybrid = "granitehybrid",
+    graniteswitch = "graniteswitch",
     chameleon = "chameleon",
     wavtokenizerDec = "wavtokenizer-dec",
     plm = "plm",
@@ -96,10 +102,13 @@ export const enum GgufArchitectureType {
     dots1 = "dots1",
     arcee = "arcee",
     afmoe = "afmoe",
+    laguna = "laguna",
     ernie4_5 = "ernie4_5",
     ernie4_5Moe = "ernie4_5-moe",
     hunyuanMoe = "hunyuan-moe",
     hunyuanDense = "hunyuan-dense",
+    hunyuanVl = "hunyuan_vl",
+    hyV3 = "hy_v3",
     smollm3 = "smollm3",
     gptOss = "gpt-oss",
     lfm2 = "lfm2",
@@ -112,10 +121,13 @@ export const enum GgufArchitectureType {
     grovemoe = "grovemoe",
     apertus = "apertus",
     minimaxM2 = "minimax-m2",
+    minimaxM3 = "minimax-m3",
     cogvlm = "cogvlm",
     rnd1 = "rnd1",
     panguEmbedded = "pangu-embedded",
     mistral3 = "mistral3",
+    eagle3 = "eagle3",
+    dflash = "dflash",
     mistral4 = "mistral4",
     paddleocr = "paddleocr",
     mimo2 = "mimo2",
@@ -123,6 +135,10 @@ export const enum GgufArchitectureType {
     llamaEmbed = "llama-embed",
     maincoder = "maincoder",
     kimiLinear = "kimi-linear",
+    talkie = "talkie",
+    mellum = "mellum",
+    nanbeige = "nanbeige",
+    qwen3tts = "qwen3tts",
     clip = "clip",
     unknown = "(unknown)"
 }
@@ -198,7 +214,8 @@ export enum GgufFileType {
     MOSTLY_TQ2_0 = 37,
     MOSTLY_MXFP4_MOE = 38,
     MOSTLY_NVFP4 = 39,
-    MOSTLY_Q1_0 = 40
+    MOSTLY_Q1_0 = 40,
+    MOSTLY_Q2_0 = 41
 }
 
 
@@ -239,6 +256,11 @@ export type GgufMetadataGeneral<A extends GgufArchitectureType = GgufArchitectur
     readonly url?: string,
 
     /**
+     * URL to the model's repository. This can be a GitHub repo, a paper, etc.
+     */
+    readonly repo_url?: string,
+
+    /**
      * free-form description of the model including anything that isn't
      * covered by the other fields
      */
@@ -264,6 +286,12 @@ export type GgufMetadataGeneral<A extends GgufArchitectureType = GgufArchitectur
          * URL to the source of the model. Can be a GitHub repo, a paper, etc.
          */
         readonly url?: string,
+
+        /**
+         * URL to the model's repository. This can be a GitHub repo, a paper, etc.
+         */
+        readonly repo_url?: string,
+
         readonly huggingface?: {
             readonly repository?: string
         }

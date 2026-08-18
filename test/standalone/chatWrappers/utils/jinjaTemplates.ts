@@ -1,6 +1,6 @@
 // source: https://huggingface.co/openai/gpt-oss-20b/blob/main/chat_template.jinja
 export const harmonyJinjaTemplate = `
-{# 
+{#
   In addition to the normal inputs of \`messages\` and \`tools\`, this template also accepts the
   following kwargs:
   - "builtin_tools": A list, can contain "browser" and/or "python".
@@ -2172,6 +2172,394 @@ export const gemma4JinjaTemplate2 = `
 {%- endif -%}
 `.slice(1);
 
+export const gemma4JinjaTemplate3 = `
+{%- macro format_parameters(properties, required, filter_keys=false) -%}
+    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+    {%- set ns = namespace(found_first=false) -%}
+    {%- for key, value in properties | dictsort -%}
+        {%- set add_comma = false -%}
+        {%- if not filter_keys or key not in standard_keys -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {{ key }}:{
+            {%- if value['description'] -%}
+                description:<|"|>{{ value['description'] }}<|"|>
+                {%- set add_comma = true -%}
+            {%- endif -%}
+            {%- if value['type'] | upper == 'STRING' -%}
+                {%- if value['enum'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    enum:{{ format_argument(value['enum']) }}
+                {%- endif -%}
+            {%- elif value['type'] | upper == 'ARRAY' -%}
+                {%- if value['items'] is mapping and value['items'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    items:{
+                    {%- set ns_items = namespace(found_first=false) -%}
+                    {%- for item_key, item_value in value['items'] | dictsort -%}
+                        {%- if item_value is not none -%}
+                            {%- if ns_items.found_first %},{% endif -%}
+                            {%- set ns_items.found_first = true -%}
+                            {%- if item_key == 'properties' -%}
+                                properties:{
+                                {%- if item_value is mapping -%}
+                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
+                                {%- endif -%}
+                                }
+                            {%- elif item_key == 'required' -%}
+                                required:[
+                                {%- for req_item in item_value -%}
+                                    <|"|>{{- req_item -}}<|"|>
+                                    {%- if not loop.last %},{% endif -%}
+                                {%- endfor -%}
+                                ]
+                            {%- elif item_key == 'type' -%}
+                                {%- if item_value is string -%}
+                                    type:{{ format_argument(item_value | upper) }}
+                                {%- else -%}
+                                    type:{{ format_argument(item_value | map('upper') | list) }}
+                                {%- endif -%}
+                            {%- else -%}
+                                {{ item_key }}:{{ format_argument(item_value) }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    }
+                {%- endif -%}
+            {%- endif -%}
+            {%- if value['nullable'] %}
+                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                nullable:true
+            {%- endif -%}
+            {%- if value['type'] | upper == 'OBJECT' -%}
+                {%- if value['properties'] is defined and value['properties'] is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
+                    }
+                {%- elif value is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
+                    }
+                {%- endif -%}
+                {%- if value['required'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    required:[
+                    {%- for item in value['required'] | default([]) -%}
+                        <|"|>{{- item -}}<|"|>
+                        {%- if not loop.last %},{% endif -%}
+                    {%- endfor -%}
+                    ]
+                {%- endif -%}
+            {%- endif -%}
+            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+{%- macro format_function_declaration(tool_data) -%}
+    declaration:{{- tool_data['function']['name'] -}}{description:<|"|>{{- tool_data['function']['description'] -}}<|"|>
+    {%- set params = tool_data['function']['parameters'] -%}
+    {%- if params -%}
+        ,parameters:{
+        {%- if params['properties'] -%}
+            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+        {%- endif -%}
+        {%- if params['required'] -%}
+            required:[
+            {%- for item in params['required'] -%}
+                <|"|>{{- item -}}<|"|>
+                {{- ',' if not loop.last -}}
+            {%- endfor -%}
+            ],
+        {%- endif -%}
+        {%- if params['type'] -%}
+            type:<|"|>{{- params['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    {%- if 'response' in tool_data['function'] -%}
+        {%- set response_declaration = tool_data['function']['response'] -%}
+        ,response:{
+        {%- if response_declaration['description'] -%}
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+        {%- endif -%}
+        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    }
+{%- endmacro -%}
+{%- macro format_argument(argument, escape_keys=True) -%}
+    {%- if argument is none -%}
+        {{- 'null' -}}
+    {%- elif argument is string -%}
+        {{- '<|"|>' + argument + '<|"|>' -}}
+    {%- elif argument is boolean -%}
+        {{- 'true' if argument else 'false' -}}
+    {%- elif argument is mapping -%}
+        {{- '{' -}}
+        {%- set ns = namespace(found_first=false) -%}
+        {%- for key, value in argument | dictsort -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {%- if escape_keys -%}
+                {{- '<|"|>' + key + '<|"|>' -}}
+            {%- else -%}
+                {{- key -}}
+            {%- endif -%}
+            :{{- format_argument(value, escape_keys=escape_keys) -}}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- elif argument is sequence -%}
+        {{- '[' -}}
+        {%- for item in argument -%}
+            {{- format_argument(item, escape_keys=escape_keys) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- ']' -}}
+    {%- else -%}
+        {{- argument -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro strip_thinking(text) -%}
+    {%- set ns = namespace(result='') -%}
+    {%- for part in text.split('<channel|>') -%}
+        {%- if '<|channel>' in part -%}
+            {%- set ns.result = ns.result + part.split('<|channel>')[0] -%}
+        {%- else -%}
+            {%- set ns.result = ns.result + part -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.result | trim -}}
+{%- endmacro -%}
+
+{%- macro format_tool_response_block(tool_name, response) -%}
+    {{- '<|tool_response>' -}}
+    {%- if response is mapping -%}
+        {{- 'response:' + tool_name + '{' -}}
+        {%- for key, value in response | dictsort -%}
+            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- else -%}
+        {{- 'response:' + tool_name + '{value:' + format_argument(response, escape_keys=False) + '}' -}}
+    {%- endif -%}
+    {{- '<tool_response|>' -}}
+{%- endmacro -%}
+
+{#- ===== SETUP ===== -#}
+{%- set ns = namespace(prev_message_type=None, prev_non_tool_role=None) -%}
+{%- set loop_messages = messages -%}
+{%- set enable_thinking = enable_thinking | default(false) -%}
+{%- set preserve_thinking = preserve_thinking | default(false) -%}
+{{- bos_token -}}
+{#- Handle System/Tool Definitions Block -#}
+{%- if enable_thinking or tools or (messages and messages[0]['role'] in ['system', 'developer']) -%}
+    {{- '<|turn>system\n' -}}
+    {#- Inject Thinking token at the very top of the FIRST system turn -#}
+    {%- if enable_thinking -%}
+        {{- '<|think|>\n' -}}
+        {%- set ns.prev_message_type = 'think' -%}
+    {%- endif -%}
+    {%- if messages and messages[0]['role'] in ['system', 'developer'] -%}
+        {%- if messages[0]['content'] is string -%}
+            {{- messages[0]['content'] | trim -}}
+        {%- elif messages[0]['content'] is sequence -%}
+            {%- for item in messages[0]['content'] -%}
+                {{- item['text'] | trim + ' '-}}
+            {%- endfor -%}
+        {%- endif -%}
+        {%- set loop_messages = messages[1:] -%}
+    {%- endif -%}
+    {%- if tools -%}
+        {%- for tool in tools %}
+            {{- '<|tool>' -}}
+            {{- format_function_declaration(tool) | trim -}}
+            {{- '<tool|>' -}}
+        {%- endfor %}
+        {%- set ns.prev_message_type = 'tool' -%}
+    {%- endif -%}
+    {{- '<turn|>\n' -}}
+{%- endif %}
+
+{#- Pre-scan: find last user message index for reasoning guard -#}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for i in range(loop_messages | length) -%}
+    {%- if loop_messages[i]['role'] == 'user' -%}
+        {%- set ns_turn.last_user_idx = i -%}
+    {%- endif -%}
+{%- endfor -%}
+
+{#- Loop through messages -#}
+{%- for message in loop_messages -%}
+    {%- if message['role'] != 'tool' -%}
+    {%- set ns.prev_message_type = None -%}
+    {%- set role = 'model' if message['role'] == 'assistant' else message['role'] -%}
+    {#- Detect continuation using tracked state — O(1) instead of O(n) backward scan -#}
+    {%- set continue_same_model_turn = (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
+    {%- if not continue_same_model_turn -%}
+        {{- '<|turn>' + role + '\n' }}
+    {%- endif -%}
+
+    {#- Render reasoning/reasoning_content as thinking channel -#}
+    {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+    {%- set thinking_gate = (loop.index0 > ns_turn.last_user_idx) or (preserve_thinking and message.get('tool_calls')) -%}
+    {%- if thinking_text and thinking_gate -%}
+        {{- '<|channel>thought\n' + thinking_text + '\n<channel|>' -}}
+    {%- endif -%}
+
+            {%- if message.get('tool_calls') -%}
+                {%- for tool_call in message.get('tool_calls') -%}
+                    {%- set function = tool_call['function'] -%}
+                    {{- '<|tool_call>call:' + function['name'] + '{' -}}
+                    {%- if function['arguments'] is mapping -%}
+                        {%- set ns_args = namespace(found_first=false) -%}
+                        {%- for key, value in function['arguments'] | dictsort -%}
+                            {%- if ns_args.found_first %},{% endif -%}
+                            {%- set ns_args.found_first = true -%}
+                            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                        {%- endfor -%}
+                    {%- elif function['arguments'] is none -%}
+                    {%- elif function['arguments'] is string -%}
+                        {#- Pre-serialized args (e.g. an OpenAI JSON string). We cannot JSON-parse
+                            portably in-template, so render non-fatally instead of erroring. Strip an
+                            outer {...} so it composes with the DSL braces rather than double-wrapping.
+                            Prefer passing arguments as a mapping for exact Gemma DSL. -#}
+                        {%- set argstr = function['arguments'] | trim -%}
+                        {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                            {{- argstr[1:-1] -}}
+                        {%- else -%}
+                            {{- function['arguments'] -}}
+                        {%- endif -%}
+                    {%- endif -%}
+                    {{- '}<tool_call|>' -}}
+                {%- endfor -%}
+                {%- set ns.prev_message_type = 'tool_call' -%}
+            {%- endif -%}
+
+            {%- set ns_tr_out = namespace(flag=false) -%}
+            {%- if message.get('tool_responses') -%}
+                {#- Legacy: tool_responses embedded on the assistant message (Google/Gemma native) -#}
+                {%- for tool_response in message.get('tool_responses') -%}
+                    {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
+                    {%- set ns_tr_out.flag = true -%}
+                    {%- set ns.prev_message_type = 'tool_response' -%}
+                {%- endfor -%}
+            {%- elif message.get('tool_calls') -%}
+                {#- OpenAI Chat Completions: forward-scan consecutive role:tool messages -#}
+                {%- set ns_tool_scan = namespace(stopped=false) -%}
+                {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
+                    {%- if ns_tool_scan.stopped -%}
+                    {%- elif loop_messages[k]['role'] != 'tool' -%}
+                        {%- set ns_tool_scan.stopped = true -%}
+                    {%- else -%}
+                        {%- set follow = loop_messages[k] -%}
+                        {#- Resolve tool_call_id to function name -#}
+                        {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
+                        {%- for tc in message.get('tool_calls') -%}
+                            {%- if tc.get('id') == follow.get('tool_call_id') -%}
+                                {%- set ns_tname.name = tc['function']['name'] -%}
+                            {%- endif -%}
+                        {%- endfor -%}
+                        {#- Handle content as string or content-parts array -#}
+                        {%- set tool_body = follow.get('content') -%}
+                        {%- if tool_body is string -%}
+                            {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                        {%- elif tool_body is sequence and tool_body is not string -%}
+                            {%- set ns_txt = namespace(s='') -%}
+                            {%- for part in tool_body -%}
+                                {%- if part.get('type') == 'text' -%}
+                                    {%- set ns_txt.s = ns_txt.s + (part.get('text') | default('')) -%}
+                                {%- endif -%}
+                            {%- endfor -%}
+                            {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}
+                            {%- for part in tool_body -%}
+                                {%- if part.get('type') in ['image', 'image_url'] -%}
+                                    {{- '<|image|>' -}}
+                                {%- elif part.get('type') in ['audio', 'input_audio'] -%}
+                                    {{- '<|audio|>' -}}
+                                {%- elif part.get('type') == 'video' -%}
+                                    {{- '<|video|>' -}}
+                                {%- endif -%}
+                            {%- endfor -%}
+                        {%- else -%}
+                            {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                        {%- endif -%}
+                        {%- set ns_tr_out.flag = true -%}
+                        {%- set ns.prev_message_type = 'tool_response' -%}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endif -%}
+
+            {%- set captured_content -%}
+            {%- if message.get('content') is string -%}
+                {%- if role == 'model' -%}
+                    {{- strip_thinking(message['content']) -}}
+                {%- else -%}
+                    {{- message['content'] | trim -}}
+                {%- endif -%}
+            {%- elif message.get('content') is sequence -%}
+                {%- for item in message['content'] -%}
+                    {%- if item.get('type') == 'text' -%}
+                        {%- if role == 'model' -%}
+                            {{- strip_thinking(item['text']) -}}
+                        {%- else -%}
+                            {{- item['text'] | trim -}}
+                        {%- endif -%}
+                    {%- elif item.get('type') in ['image', 'image_url'] -%}
+                        {{- '<|image|>' -}}
+                    {%- elif item.get('type') in ['audio', 'input_audio'] -%}
+                        {{- '<|audio|>' -}}
+                    {%- elif item.get('type') == 'video' -%}
+                        {{- '<|video|>' -}}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endif -%}
+            {%- endset -%}
+
+            {{- captured_content -}}
+            {%- set has_content = captured_content | trim | length > 0 -%}
+
+        {#- Forward-scan: find next non-tool message role for continuation detection -#}
+        {%- set next_nt = namespace(role=None, found=false) -%}
+        {%- for j in range(loop.index0 + 1, loop_messages | length) -%}
+            {%- if not next_nt.found -%}
+                {%- if loop_messages[j]['role'] != 'tool' -%}
+                    {%- set next_nt.role = loop_messages[j]['role'] -%}
+                    {%- set next_nt.found = true -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endfor -%}
+
+        {%- set continues_into_next = (
+            role == 'model'
+            and next_nt.role == 'assistant'
+            and (not message.get('tool_calls') or ns_tr_out.flag)
+        ) -%}
+
+        {%- if ns.prev_message_type == 'tool_call' and not ns_tr_out.flag -%}
+            {{- '<|tool_response>' -}}
+        {%- elif continues_into_next -%}
+        {%- elif not (ns_tr_out.flag and not has_content and not next_nt.found) -%}
+            {{- '<turn|>\n' -}}
+        {%- endif -%}
+
+    {#- Track previous non-tool role for next iteration (avoids O(n) backward scan) -#}
+    {%- set ns.prev_non_tool_role = message['role'] -%}
+    {%- endif -%}
+{%- endfor -%}
+
+{%- if add_generation_prompt -%}
+    {%- if ns.prev_message_type != 'tool_response' and ns.prev_message_type != 'tool_call' -%}
+        {{- '<|turn>model\n' -}}
+    {%- elif ns.prev_message_type == 'tool_response' and enable_thinking -%}
+        {{- '<|channel>thought\n' -}}
+    {%- endif -%}
+{%- endif -%}
+`.slice(1, -1);
+
 export const lfm2_5JinjaTemplate = `
 {{- bos_token -}}
 {%- set preserve_thinking = preserve_thinking | default(false) -%}
@@ -2823,3 +3211,293 @@ For each function call, output the function name and arguments within the follow
 {%- endif -%}
 {# Copyright 2025-present Unsloth. Apache 2.0 License. #}
 `.slice(1, -1);
+
+export const LagunaXS2_1JinjaTemplate = `
+{#- Iteration on laguna_glm_thinking_v8/chat_template.jinja -#}
+{#- No formatting instructions -#}
+{{- "〈|EOS|〉" -}}
+{%- set enable_thinking = enable_thinking | default(false) -%}
+{%- set add_generation_prompt = add_generation_prompt | default(false) -%}
+
+{#- ───── header (system message) ───── -#}
+{#- A caller-supplied system message with empty content opts out of the default below, producing no <system> block — used to train without a system message. -#}
+{%- set system_message = "You are a helpful, conversationally-fluent assistant made by Poolside. You are here to be helpful to users through natural language conversations." -%}
+{%- if messages and messages[0].role == "system" -%}
+  {%- set system_message = messages[0].content -%}
+  {%- set messages = messages[1:] -%}
+{%- endif -%}
+
+{%- set has_sys = system_message and system_message.strip() -%}
+{%- if has_sys or tools or enable_thinking -%}
+  {{- "<system>" -}}
+
+  {%- if has_sys -%}
+    {{- system_message.rstrip() -}}
+    {%- if tools -%}{{- "\n\n" -}}{%- endif -%}
+  {%- endif -%}
+
+  {%- if tools -%}
+    {{- "### Tools\n\n" -}}
+    {{- "You may call functions to assist with the user query.\n" -}}
+    {{- "All available function signatures are listed below:\n" -}}
+    {{- "<available_tools>\n" -}}
+    {%- for tool in tools -%}
+      {{- (tool | tojson) ~ "\n" -}}
+    {%- endfor -%}
+    {{- "</available_tools>" -}}
+  {%- endif -%}
+
+  {{- "</system>\n" -}}
+{%- endif -%}
+
+{#- ───── main loop ───── -#}
+{%- for message in messages -%}
+  {%- set content = message.content if message.content is string else "" -%}
+  {%- if message.role == "user" -%}
+    {{- "<user>" + content + "</user>\n" -}}
+  {%- elif message.role == "assistant" -%}
+    {%- generation -%}
+      {{- "<assistant>" -}}
+      {#- Extract reasoning content from message.reasoning (vLLM field name) or message.reasoning_content -#}
+      {%- set reasoning_content = '' -%}
+      {%- if message.reasoning is string -%}
+        {%- set reasoning_content = message.reasoning -%}
+      {%- elif message.reasoning_content is string -%}
+        {%- set reasoning_content = message.reasoning_content -%}
+      {%- endif -%}
+      {#- Display reasoning content for all messages if enable_thinking -#}
+      {%- if enable_thinking -%}
+        {{- '<think>' + reasoning_content + '</think>' -}}
+      {%- else -%}
+        {{- '</think>' -}}
+      {%- endif -%}
+      {#- Display main content (trailing newline only when no tool_calls follow) -#}
+      {%- if content -%}
+        {{- content -}}
+      {%- endif -%}
+      {%- if message.tool_calls -%}
+        {%- for tool_call in message.tool_calls -%}
+          {%- set function_data = tool_call.function -%}
+          {{- '<tool_call>' + function_data.name -}}
+          {%- set _args = function_data.arguments -%}
+          {%- for k, v in _args.items() -%}
+            {{- "<arg_key>" ~ k ~ "</arg_key>" -}}
+            {{- "<arg_value>" -}}{{- v | tojson(ensure_ascii=False) if v is not string else v -}}{{- "</arg_value>" -}}
+          {%- endfor -%}
+          {{- "</tool_call>" -}}
+        {%- endfor -%}
+      {%- endif -%}
+      {{- "</assistant>\n" -}}
+    {%- endgeneration -%}
+  {%- elif message.role == "tool" -%}
+    {{- "<tool_response>" + content + "</tool_response>\n" -}}
+  {%- elif message.role == "system" -%}
+    {#- Render additional system messages (the first one, if any, is handled separately in the header and was sliced off above) -#}
+    {{- "<system>" + content + "</system>\n" -}}
+  {%- endif -%}
+{%- endfor -%}
+{#- ───── generation prompt ───── -#}
+{%- if add_generation_prompt -%}
+  {{- "<assistant>" -}}
+  {#- ───── Include reasoning mode directive ───── -#}
+  {%- if enable_thinking -%}
+    {{- '<think>' -}}
+  {%- else -%}
+    {{- '</think>' -}}
+  {%- endif -%}
+{%- endif -%}
+`.slice(1, -1);
+
+// source: https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/main/chat_template.jinja
+export const museGlimmerJinjaTemplate = String.raw`
+{%- macro render_content(content) -%}
+    {%- if content is string -%}
+        {{- content -}}
+    {%- elif content is not none -%}
+        {%- for part in content -%}
+            {%- if part["type"] == "image" -%}
+                {{- "<|patch|>" -}}
+            {%- elif part["type"] == "video" -%}
+                {{- "<|video|>" -}}
+            {%- elif part["type"] == "text" -%}
+                {{- part["text"] -}}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro render_atem(tc) -%}
+    {%- set args = tc.function.arguments -%}
+    {%- if args is not mapping -%}
+        {{- raise_exception("Onyx ATEM chat template requires tool_call.function.arguments to be a dict (mapping); a JSON string cannot be parsed in the HF jinja sandbox.") -}}
+    {%- endif -%}
+    {{- "<atem:function_calls>\n<atem:invoke name=\"" + tc.function.name + "\">\n" -}}
+    {%- for (k, v) in args.items() -%}
+        {{- "<atem:parameter name=\"" + k + "\">" -}}
+        {%- if v is boolean -%}
+            {%- if v -%}
+                {{- "true" -}}
+            {%- else -%}
+                {{- "false" -}}
+            {%- endif -%}
+        {%- elif v is none -%}
+            {{- "null" -}}
+        {%- elif v is mapping or v is iterable and v is not string -%}
+            {{- v | tojson -}}
+        {%- else -%}
+            {{- v -}}
+        {%- endif -%}
+        {{- "</atem:parameter>\n" -}}
+    {%- endfor -%}
+    {{- "</atem:invoke>\n</atem:function_calls>" -}}
+{%- endmacro -%}
+{%- macro render_tool_defs(tools) -%}
+    {{- "In this environment you have access to a set of tools you can use to answer the user's question.\n\n" -}}
+    {{- "You can invoke a function by writing a \"<atem:function_calls>\" block like the following:\n" -}}
+    {{- "<atem:function_calls>\n<atem:invoke name=\"$FUNCTION_NAME\">\n<atem:parameter name=\"$PARAMETER_NAME\">$PARAMETER_VALUE</atem:parameter>\n...\n</atem:invoke>\n</atem:function_calls>\n\n" -}}
+    {{- "String and scalar parameters should be specified as is, while lists and objects should use JSON format. Note that spaces for string values are not stripped. The output is not expected to be valid XML and is parsed with regular expressions.\n" -}}
+    {{- "Here are the functions available in JSONSchema format:\n" -}}
+    {{- "// Tool metadata\n" -}}
+    {%- set nsns = namespace(seen=[]) -%}
+    {%- for tool in tools -%}
+        {%- set fn = tool.function if tool.function is defined else tool -%}
+        {%- set tns = fn.name.split(".")[0] -%}
+        {%- if tns not in nsns.seen -%}
+            {%- set nsns.seen = nsns.seen + [tns] -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- set nd = tool_namespace_descriptions if tool_namespace_descriptions is defined else {} -%}
+    {%- for tns in nsns.seen -%}
+        {{- "{\"name\": " + tns | tojson + ", \"description\": " + (nd[tns] if tns in nd else "") | tojson + "}\n" -}}
+    {%- endfor -%}
+    {{- "// Function schemas" -}}
+    {%- for tool in tools -%}
+        {%- set fn = tool.function if tool.function is defined else tool -%}
+        {{- "\n{\"name\": " + fn.name | tojson + ", \"description\": " + fn.description | tojson + ", \"parameters\": " + fn.parameters | tojson + "}" -}}
+    {%- endfor -%}
+    {{- "\n\nHere's an example of how to call a function in the tool set:\n" -}}
+    {{- "(If the tool namespace is not specified, invoke the function directly as \`example_function_name\` rather than \`example_tool_name.example_function_name\`)\n\n" -}}
+    {{- "to=example_tool_name.example_function_name\n\n" -}}
+    {{- "<atem:function_calls>\n<atem:invoke name=\"example_tool_name.example_function_name\">\n" -}}
+    {{- "<atem:parameter name=\"example_parameter_1\">value_1</atem:parameter>\n" -}}
+    {{- "<atem:parameter name=\"example_parameter_2\">This is the value for the second parameter\nthat can span\n\"multiple\" lines\n</atem:parameter>\n" -}}
+    {{- "</atem:invoke>\n</atem:function_calls>" -}}
+{%- endmacro -%}
+{%- macro render_reasoning() -%}
+    {%- set rs = reasoning_strength if reasoning_strength is defined and reasoning_strength else "high" -%}
+    {{- "Reasoning strength: " + rs + "." -}}
+{%- endmacro -%}
+{%- macro render_system_meta(tools) -%}
+    {%- set rns = namespace(recipients=["\"self\""], nslist=[]) -%}
+    {%- if tools -%}
+        {%- for tool in tools -%}
+            {%- set fn = tool.function if tool.function is defined else tool -%}
+            {%- set tns = fn.name.split(".")[0] -%}
+            {%- if tns not in rns.nslist -%}
+                {%- set rns.nslist = rns.nslist + [tns] -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- for tns in rns.nslist -%}
+            {%- set rns.recipients = rns.recipients + ["\"" + tns + ".*\""] -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set rns.recipients = rns.recipients + ["\"user\""] -%}
+    {{- "# Valid recipients: " + rns.recipients | join(", ") + "." -}}
+{%- endmacro -%}
+{{- bos_token -}}
+{%- set ns = namespace(has_system=false) -%}
+{%- for m in messages -%}
+    {%- if m["role"] == "system" -%}
+        {%- set ns.has_system = true -%}
+    {%- endif -%}
+{%- endfor -%}
+{%- if not ns.has_system -%}
+    {{- "<|start|>system<|message|>You are a helpful AI assistant." -}}
+    {%- set kc = knowledge_cutoff if knowledge_cutoff is defined and knowledge_cutoff else "2026-01-04" -%}
+    {{- "\nKnowledge cutoff: " + kc + "." -}}
+    {%- if current_date is defined and current_date -%}
+        {{- "\nCurrent date: " + current_date + "." -}}
+    {%- elif strftime_now is defined -%}
+        {{- "\nCurrent date: " + strftime_now("%Y-%m-%d") + "." -}}
+    {%- endif -%}
+    {{- "\n\n" -}}
+    {{- render_reasoning() -}}
+    {%- if tools -%}
+        {{- "\n\n" -}}
+        {{- render_tool_defs(tools) -}}
+    {%- endif -%}
+    {{- "\n\n" -}}
+    {{- render_system_meta(tools) -}}
+    {{- "<|eot|>" -}}
+{%- endif -%}
+{%- for message in messages -%}
+    {%- set role = message["role"] -%}
+    {%- set end_token = "<|eom|>" if not loop.last and messages[loop.index0 + 1]["role"] == role else "<|eot|>" -%}
+    {%- if role == "system" -%}
+        {{- "<|start|>system<|message|>" -}}
+        {{- render_content(message["content"]) -}}
+        {{- "\n\n" -}}
+        {{- render_reasoning() -}}
+        {%- if tools -%}
+            {{- "\n\n" -}}
+            {{- render_tool_defs(tools) -}}
+        {%- endif -%}
+        {{- "\n\n" -}}
+        {{- render_system_meta(tools) -}}
+        {{- "<|eot|>" -}}
+    {%- elif role == "user" -%}
+        {{- "<|start|>user<|message|>" -}}
+        {{- render_content(message["content"]) -}}
+        {{- "<|eot|>" -}}
+    {%- elif role == "tool" -%}
+        {%- set tname = message.get("name") -%}
+        {%- if not tname -%}
+            {%- set tcid = message.get("tool_call_id") -%}
+            {%- set rns = namespace(name=tcid if tcid else "") -%}
+            {%- for m in messages -%}
+                {%- if m.get("tool_calls") -%}
+                    {%- for tc in m["tool_calls"] -%}
+                        {%- if tcid is not none and tc.id is defined and tc.id == tcid -%}
+                            {%- set rns.name = tc.function.name -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                {%- endif -%}
+            {%- endfor -%}
+            {%- set tname = rns.name -%}
+        {%- endif -%}
+        {{- "<|start|>tool " + tname + "<|message|><tool_output name=\"" + tname + "\">\n" -}}
+        {{- render_content(message["content"]) -}}
+        {{- "\n</tool_output><|eot|>" -}}
+    {%- elif role == "assistant" -%}
+        {%- if message.get("reasoning_content") -%}
+            {{- "<|start|>assistant to=self<|message|>" + message["reasoning_content"] + "<|eom|>" -}}
+        {%- endif -%}
+        {%- if message.get("tool_calls") -%}
+            {%- for tc in message["tool_calls"] -%}
+                {{- "<|start|>assistant to=" + tc.function.name + "<|message|>" -}}
+                {{- render_atem(tc) -}}
+                {%- if loop.last -%}
+                    {{- end_token -}}
+                {%- else -%}
+                    {{- "<|eom|>" -}}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- else -%}
+            {%- set recipient = message.get("recipient") or "user" -%}
+            {%- set end_turn = message.get("end_turn") -%}
+            {%- if end_turn is none -%}
+                {%- set end_turn = not (recipient and recipient != "user") -%}
+            {%- endif -%}
+            {{- "<|start|>assistant" -}}
+            {%- if recipient -%}
+                {{- " to=" + recipient -}}
+            {%- endif -%}
+            {{- "<|message|>" -}}
+            {{- render_content(message["content"]) -}}
+            {{- "<|eot|>" if end_turn else "<|eom|>" -}}
+        {%- endif -%}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- "<|start|>assistant" -}}
+{%- endif -%}
+`.slice(1, -1).replaceAll("\\`", "`");

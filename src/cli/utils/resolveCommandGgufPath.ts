@@ -5,7 +5,7 @@ import {cliModelsDirectory} from "../../config.js";
 import {Llama} from "../../bindings/Llama.js";
 import {createModelDownloader} from "../../utils/createModelDownloader.js";
 import {resolveModelDestination} from "../../utils/resolveModelDestination.js";
-import {ggufQuantNames} from "../../gguf/utils/ggufQuantNames.js";
+import {ggufFileQuantNamesSet} from "../../gguf/utils/ggufQuantNames.js";
 import {getConsoleLogPrefix} from "../../utils/getConsoleLogPrefix.js";
 import {isModelUri} from "../../utils/parseModelUri.js";
 import {GgmlType, resolveGgmlTypeOption} from "../../gguf/types/GgufTensorInfoTypes.js";
@@ -32,10 +32,10 @@ export async function resolveCommandGgufPath(ggufPath: string | undefined, llama
             useMmap,
             kvCacheKeyType: kvCacheKeyType === "currentQuant"
                 ? "currentQuant"
-                : resolveGgmlTypeOption(kvCacheKeyType),
+                : resolveGgmlTypeOption(kvCacheKeyType, llama),
             kvCacheValueType: kvCacheValueType === "currentQuant"
                 ? "currentQuant"
-                : resolveGgmlTypeOption(kvCacheValueType)
+                : resolveGgmlTypeOption(kvCacheValueType, llama)
         });
 
     const resolvedModelDestination = resolveModelDestination(ggufPath);
@@ -134,7 +134,7 @@ export async function resolveCommandGgufPath(ggufPath: string | undefined, llama
                 fileStats.map(async ({stats, info}) => {
                     if (stats == null)
                         return;
-    
+
                     if (stats.size !== info.totalSize)
                         await fs.remove(info.filePath);
                 })
@@ -179,7 +179,7 @@ export function tryCoercingModelUri(ggufPath: string) {
             // <user>/<model>
             // <user>/<model>:<valid quant or "latest">
             foundSlashes === 1 &&
-            (possibleQuant == null || possibleQuant === "latest" || ggufQuantNames.has(possibleQuant.toUpperCase()))
+            (possibleQuant == null || possibleQuant === "latest" || ggufFileQuantNamesSet.has(possibleQuant.toUpperCase()))
         )
     ) {
         const possibleUri = "hf:" + ggufPath;

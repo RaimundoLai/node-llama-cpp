@@ -23,10 +23,11 @@ import {pushAll} from "../../utils/pushAll.js";
 import {resolveLastTokens} from "../../utils/resolveLastTokens.js";
 import {LlamaSampler} from "../LlamaContext/LlamaSampler.js";
 import {LlamaModel} from "../LlamaModel/LlamaModel.js";
-import {getChatWrapperSegmentDefinition} from "../../utils/getChatWrapperSegmentDefinition.js";
+import {getStandardizedChatWrapperSegmentDefinition} from "../../utils/getStandardizedChatWrapperSegmentDefinition.js";
 import {jsonDumps} from "../../chatWrappers/utils/jsonDumps.js";
 import {defaultMaxPreloadTokens} from "../LlamaChatSession/utils/LlamaChatSessionPromptCompletionEngine.js";
 import {LlamaLogLevel} from "../../bindings/types.js";
+import {replaceRegularTextInLlamaText} from "../../chatWrappers/utils/replaceRegularTextInLlamaText.js";
 import {
     eraseFirstResponseAndKeepFirstSystemChatContextShiftStrategy
 } from "./utils/contextShiftStrategies/eraseFirstResponseAndKeepFirstSystemChatContextShiftStrategy.js";
@@ -712,6 +713,25 @@ export class LlamaChat {
                     await loadContextWindow();
                     generateResponseState.isRerender = false;
 
+                    const shouldOpenThoughtSegment = generateResponseState.isFirstEvaluation
+                        ? generateResponseState.onModelResponseStartShouldOpenThoughtSegment()
+                        : false;
+                    if (shouldOpenThoughtSegment !== false) {
+                        if (!tookInitialCheckpoint && this.sequence.needsCheckpoints && shouldOpenThoughtSegment !== "openedOnStart") {
+                            await generateResponseState.alignCurrentSequenceStateWithCurrentTokens(false);
+                            await generateResponseState.evaluateWithoutGeneratingNewTokens();
+
+                            await this.sequence.takeCheckpoint();
+                            tookInitialCheckpoint = true;
+                        }
+
+                        generateResponseState.openThoughtSegmentOnModelResponseStart();
+                        generateResponseState.canAvoidReloadingHistory = false;
+                        generateResponseState.isRerender = shouldHandlePrefixTriggers;
+                        await loadContextWindow();
+                        generateResponseState.isRerender = false;
+                    }
+
                     generateResponseState.addStopGenerationTriggersFromChatWrapper();
 
                     if (generateResponseState.generatedTokens === 0) {
@@ -957,9 +977,12 @@ export class LlamaChat {
                     ));
 
                     allSegmentTypes
-                        .map((segmentType) => getChatWrapperSegmentDefinition(this._chatWrapper.settings, segmentType))
-                        .filter((segmentDefinition) => segmentDefinition != null)
-                        .flatMap((segmentDefinition) => [segmentDefinition?.prefix, segmentDefinition?.suffix])
+                        .map((segmentType) => getStandardizedChatWrapperSegmentDefinition(this._chatWrapper.settings, segmentType))
+                        .filter((standardizedSegmentDefinition) => standardizedSegmentDefinition != null)
+                        .flatMap((standardizedSegmentDefinition) => [
+                            standardizedSegmentDefinition?.prefix,
+                            standardizedSegmentDefinition?.suffix
+                        ])
                         .filter((trigger) => trigger != null)
                         .forEach((trigger) => (
                             generateResponseState.stopGenerationDetector.addStopTrigger(
@@ -1930,23 +1953,28 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
             for (const sectionPrefix of [
                 this.chatWrapper.settings.functions?.parallelism?.call?.sectionPrefix ?? "",
                 ...(this.chatWrapper.settings.functions?.parallelism?.call.sectionPrefixAlternateMatches ?? [])
-            ])
-                this.functionSyntaxStartDetector.addStopTrigger(
-                    StopGenerationDetector.resolveLlamaTextTrigger(
-                        LlamaText([
-                            sectionPrefix,
-                            this.chatWrapper.settings.functions.call.prefix
-                        ]),
-                        this.llamaChat.model.tokenizer
-                    )
-                );
+            ]) {
+                for (const prefix of [
+                    this.chatWrapper.settings.functions.call.prefix,
+                    ...(this.chatWrapper.settings.functions.call.prefixAlternateMatches ?? [])
+                ])
+                    this.functionSyntaxStartDetector.addStopTrigger(
+                        StopGenerationDetector.resolveLlamaTextTrigger(
+                            LlamaText([
+                                sectionPrefix,
+                                prefix
+                            ]),
+                            this.llamaChat.model.tokenizer
+                        )
+                    );
+            }
         }
 
         const segmentDefinitions: ConstructorParameters<typeof SegmentHandler>[0]["segmentDefinitions"] = new Map();
         for (const segmentType of allSegmentTypes) {
-            const segmentDefinition = getChatWrapperSegmentDefinition(this.chatWrapper.settings, segmentType);
-            if (segmentDefinition != null)
-                segmentDefinitions.set(segmentType, segmentDefinition);
+            const standardizedSegmentDefinition = getStandardizedChatWrapperSegmentDefinition(this.chatWrapper.settings, segmentType);
+            if (standardizedSegmentDefinition != null)
+                segmentDefinitions.set(segmentType, standardizedSegmentDefinition);
         }
 
         const lastModelMessageFullResponse = getLastModelMessageFullResponseFromChatHistory(this.resolvedHistory);
@@ -1968,23 +1996,28 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
             for (const sectionPrefix of [
                 this.chatWrapper.settings.functions?.parallelism?.call?.sectionPrefix ?? "",
                 ...(this.chatWrapper.settings.functions?.parallelism?.call.sectionPrefixAlternateMatches ?? [])
-            ])
-                this.stopGenerationDetector.addStopTrigger(
-                    StopGenerationDetector.resolveLlamaTextTrigger(
-                        LlamaText([
-                            sectionPrefix,
-                            this.chatWrapper.settings.functions.call.prefix
-                        ]),
-                        this.llamaChat.model.tokenizer
-                    )
-                );
-
-            for (const segmentType of allSegmentTypes) {
-                const segmentDefinition = getChatWrapperSegmentDefinition(this.chatWrapper.settings, segmentType);
-                if (segmentDefinition != null)
+            ]) {
+                for (const prefix of [
+                    this.chatWrapper.settings.functions.call.prefix,
+                    ...(this.chatWrapper.settings.functions.call.prefixAlternateMatches ?? [])
+                ])
                     this.stopGenerationDetector.addStopTrigger(
                         StopGenerationDetector.resolveLlamaTextTrigger(
-                            LlamaText(segmentDefinition.prefix),
+                            LlamaText([
+                                sectionPrefix,
+                                prefix
+                            ]),
+                            this.llamaChat.model.tokenizer
+                        )
+                    );
+            }
+
+            for (const segmentType of allSegmentTypes) {
+                const standardizedSegmentDefinition = getStandardizedChatWrapperSegmentDefinition(this.chatWrapper.settings, segmentType);
+                if (standardizedSegmentDefinition?.prefix != null)
+                    this.stopGenerationDetector.addStopTrigger(
+                        StopGenerationDetector.resolveLlamaTextTrigger(
+                            LlamaText(standardizedSegmentDefinition.prefix),
                             this.llamaChat.model.tokenizer
                         )
                     );
@@ -2016,6 +2049,52 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
                 type: "user",
                 text: ""
             });
+    }
+
+    public onModelResponseStartShouldOpenThoughtSegment() {
+        const lastModelResponseItem = this.resolvedHistory.at(-1);
+        if (lastModelResponseItem == null || lastModelResponseItem.type !== "model")
+            return false;
+
+        const prefix = this.chatWrapper.settings.segments?.thought?.prefix;
+        if (typeof prefix === "object" && !LlamaText.isLlamaText(prefix) && prefix.type === "openedOnStart" &&
+            lastModelResponseItem.response.length === 0
+        )
+            return "openedOnStart";
+
+        if (this.chatWrapper.settings.segments?.thought?.openOnResponseStart !== true)
+            return false;
+
+        if (lastModelResponseItem.response.length > 0)
+            return false;
+
+        const currentResponseSegmentsStack = SegmentHandler.getStackFromModelResponse(lastModelResponseItem.response);
+        if (currentResponseSegmentsStack.includes("thought"))
+            return false;
+
+        if (this.abortOnNonText)
+            return false;
+        else
+            return true;
+    }
+
+    public openThoughtSegmentOnModelResponseStart() {
+        const lastModelResponseItem = this.resolvedHistory.at(-1);
+        if (lastModelResponseItem == null || lastModelResponseItem.type !== "model")
+            return false;
+
+        const currentResponseSegmentsStack = SegmentHandler.getStackFromModelResponse(lastModelResponseItem.response);
+        if (currentResponseSegmentsStack.includes("thought"))
+            return false;
+
+        if (this.abortOnNonText)
+            // we won't force-open a though segment if we are aborting on non-text,
+            // as it would never allow a textual generation even if the model would choose it otherwise
+            return false;
+        else {
+            this.segmentHandler.openSegment("thought");
+            return true;
+        }
     }
 
     public ensureReopenedThoughtSegmentAfterFunctionCallsIfNeeded() {
@@ -2856,7 +2935,11 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
                 this.currentFunctionCallPreviousText = LlamaText([
                     this.chatWrapper.settings.functions.call.prefix,
                     this.functionEvaluationFunctionName,
-                    this.chatWrapper.settings.functions.call.paramsPrefix
+                    replaceRegularTextInLlamaText(
+                        this.chatWrapper.settings.functions.call.paramsPrefix,
+                        "{{functionName}}",
+                        this.functionEvaluationFunctionName
+                    )
                 ]);
                 const lastPartTokens = resolveLastTokens([this.currentFunctionCallCurrentPartTokens]);
                 this.currentFunctionCallCurrentPartTokens.length = 0;
@@ -2968,9 +3051,17 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
                 const functionCallText = LlamaText([
                     this.chatWrapper.settings.functions.call.prefix,
                     this.functionEvaluationFunctionName,
-                    this.chatWrapper.settings.functions.call.paramsPrefix,
+                    replaceRegularTextInLlamaText(
+                        this.chatWrapper.settings.functions.call.paramsPrefix,
+                        "{{functionName}}",
+                        this.functionEvaluationFunctionName
+                    ),
                     paramsText,
-                    this.chatWrapper.settings.functions.call.suffix
+                    replaceRegularTextInLlamaText(
+                        this.chatWrapper.settings.functions.call.suffix,
+                        "{{functionName}}",
+                        this.functionEvaluationFunctionName
+                    )
                 ]);
                 this.resFunctionCalls.push({
                     functionName: this.functionEvaluationFunctionName,
@@ -3193,21 +3284,24 @@ class GenerateResponseState<const Functions extends ChatModelFunctions | undefin
         throw new Error("The context size is too small to generate a response");
     }
 
-    public async alignCurrentSequenceStateWithCurrentTokens() {
+    public async alignCurrentSequenceStateWithCurrentTokens(popOneTokenIfNeeded: boolean = true) {
         if (this.tokens.length === 1 && this.llamaChat.sequence.nextTokenIndex !== 0) {
             await this.llamaChat.sequence.eraseContextTokenRanges([{
                 start: 0,
                 end: this.llamaChat.sequence.nextTokenIndex
             }]);
             return;
+        } else if (!popOneTokenIfNeeded)
+            await this.llamaChat.sequence.adaptStateToTokens(this.tokens, false);
+        else {
+            const lastToken = this.tokens[this.tokens.length - 1]!;
+
+            // we need to decode at least one token to generate a response
+            this.tokens.pop();
+            await this.llamaChat.sequence.adaptStateToTokens(this.tokens, false);
+            this.tokens.push(lastToken);
         }
 
-        const lastToken = this.tokens[this.tokens.length - 1]!;
-
-        // we need to decode at least one token to generate a response
-        this.tokens.pop();
-        await this.llamaChat.sequence.adaptStateToTokens(this.tokens, false);
-        this.tokens.push(lastToken);
         this.ensureNotAborted();
 
         const firstDifferentIndex = this.llamaChat.sequence.nextTokenIndex;
@@ -3728,12 +3822,13 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
 
     private readonly _closeAllSegmentsDetector?: StopGenerationDetector;
     private readonly _segmentDetectors: Map<S, {
-        prefix: StopGenerationDetector,
+        prefix?: StopGenerationDetector,
         suffix?: StopGenerationDetector
     }>;
     private readonly _segmentsStack: S[] = [];
     private readonly _segmentsStackSet: Set<S> = new Set<S>();
     private _ownedSegmentsStackLength: number = 0;
+    private _contextWindowOwnedSegmentsStackLength: number = 0;
     private readonly _segments: RawSegment<S>[] = [];
     private readonly _segmentsStartTokenTrail: Token[] = [];
     private readonly _segmentTokenCounts: Map<S | undefined, number>;
@@ -3743,7 +3838,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
     private readonly _tokensTrail: Token[];
     private readonly _streamRegulator = new TokenStreamRegulator();
     private readonly _segmentDefinitions: Map<S, {
-        prefix: string | LlamaText,
+        prefix?: string | LlamaText,
         suffix?: string | LlamaText
     }>;
 
@@ -3757,7 +3852,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
         onTextChunk?: LLamaChatGenerateResponseOptions["onTextChunk"],
         onResponseChunk?: LLamaChatGenerateResponseOptions["onResponseChunk"],
         segmentDefinitions: Map<S, {
-            prefix: string | LlamaText,
+            prefix?: string | LlamaText,
             suffix?: string | LlamaText
         }>,
         closeAllSegments?: string | LlamaText,
@@ -3781,13 +3876,16 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
         this._segmentsStack = initialSegmentStack;
         this._segmentsStackSet = new Set(initialSegmentStack);
         this._ownedSegmentsStackLength = initialSegmentStack.length;
+        this._contextWindowOwnedSegmentsStackLength = initialSegmentStack.length;
         this._segmentDefinitions = segmentDefinitions;
         this._segmentTokenCounts = new Map(initialTokenCounts);
 
         for (const [segment, {prefix, suffix}] of segmentDefinitions.entries()) {
             this._segmentDetectors.set(segment, {
-                prefix: new StopGenerationDetector()
-                    .addStopTrigger(StopGenerationDetector.resolveLlamaTextTrigger(LlamaText(prefix), this.model.tokenizer)),
+                prefix: prefix != null
+                    ? new StopGenerationDetector()
+                        .addStopTrigger(StopGenerationDetector.resolveLlamaTextTrigger(LlamaText(prefix), this.model.tokenizer))
+                    : undefined,
                 suffix: suffix != null
                     ? new StopGenerationDetector()
                         .addStopTrigger(StopGenerationDetector.resolveLlamaTextTrigger(LlamaText(suffix), this.model.tokenizer))
@@ -3826,6 +3924,8 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
 
         this._contextWindowStartTokenTrail.length = 0;
         pushAll(this._contextWindowStartTokenTrail, this._getTokenTrailFromResult());
+
+        this._contextWindowOwnedSegmentsStackLength = this._segmentsStack.length;
     }
 
     public openSegment(type: S) {
@@ -3950,6 +4050,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
                     }
 
                     this._ownedSegmentsStackLength = 0;
+                    this._contextWindowOwnedSegmentsStackLength = 0;
                 }
 
                 if (leftTokens.length > 0)
@@ -3975,7 +4076,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
                 if (handleDetector(prefix, "push", type))
                     return;
             } else
-                prefix.clearInProgressStops();
+                prefix?.clearInProgressStops();
 
             if (this._segmentsStackSet.has(type)) {
                 // `currentType` suffix is already handled above
@@ -4061,6 +4162,9 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
             if (this._segmentsStack.length < this._ownedSegmentsStackLength)
                 this._ownedSegmentsStackLength = this._segmentsStack.length;
 
+            if (this._segmentsStack.length < this._contextWindowOwnedSegmentsStackLength)
+                this._contextWindowOwnedSegmentsStackLength = this._segmentsStack.length;
+
             return;
         }
 
@@ -4074,6 +4178,9 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
 
             if (this._segmentsStack.length < this._ownedSegmentsStackLength)
                 this._ownedSegmentsStackLength = this._segmentsStack.length;
+
+            if (this._segmentsStack.length < this._contextWindowOwnedSegmentsStackLength)
+                this._contextWindowOwnedSegmentsStackLength = this._segmentsStack.length;
 
             this._segments.push({type: segmentType, tokens: [], ended: true, start: false, endTime: now});
             this._contextWindowSegments.push({type: segmentType, tokens: [], ended: true, start: false, endTime: now});
@@ -4097,8 +4204,8 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
 
         for (const {prefix, suffix} of this._segmentDetectors.values()) {
             if (prefix !== skipDetector) {
-                prefix.clearInProgressStops();
-                prefix.clearTriggeredStops();
+                prefix?.clearInProgressStops();
+                prefix?.clearTriggeredStops();
             }
 
             if (suffix !== skipDetector) {
@@ -4208,7 +4315,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
                     type,
                     tokens: tokens.slice(),
                     ended: false,
-                    start: this._segmentsStack.length > this._ownedSegmentsStackLength,
+                    start: this._segmentsStack.length > this._contextWindowOwnedSegmentsStackLength,
                     startTime: now
                 });
             else {
@@ -4217,7 +4324,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
                         type,
                         tokens: tokens.slice(),
                         ended: false,
-                        start: this._segmentsStack.length > this._ownedSegmentsStackLength,
+                        start: this._segmentsStack.length > this._contextWindowOwnedSegmentsStackLength,
                         startTime: now
                     });
                 else
@@ -4295,7 +4402,7 @@ class SegmentHandler<const S extends ChatModelSegmentType = ChatModelSegmentType
                     ? LlamaText([text]).toJSON()
                     : LlamaText([
                         rawSegment.start
-                            ? segmentDefinition.prefix
+                            ? (segmentDefinition.prefix ?? "")
                             : "",
                         text,
                         rawSegment.ended
