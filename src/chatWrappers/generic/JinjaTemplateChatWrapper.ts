@@ -1,8 +1,8 @@
 import {Template} from "@huggingface/jinja";
 import {splitText} from "lifecycle-utils";
 import {
-    ChatHistoryItem, ChatModelFunctions, ChatUserMessage, ChatWrapperGenerateContextStateOptions, ChatWrapperGeneratedContextState,
-    ChatWrapperSettings, isChatModelResponseSegment, Tokenizer
+    ChatHistoryItem, ChatModelFunctions, ChatModelSegment, ChatUserMessage, ChatWrapperGenerateContextStateOptions,
+    ChatWrapperGeneratedContextState, ChatWrapperSettings, isChatModelResponseFunctionCall, isChatModelResponseSegment, Tokenizer
 } from "../../types.js";
 import {SpecialToken, LlamaText, SpecialTokensText} from "../../utils/LlamaText.js";
 import {ChatWrapper} from "../../ChatWrapper.js";
@@ -15,6 +15,7 @@ import {jsonDumps} from "../utils/jsonDumps.js";
 import {tryMatrix} from "../../utils/optionsMatrix.js";
 import {getStandardizedChatWrapperSegmentDefinition} from "../../utils/getStandardizedChatWrapperSegmentDefinition.js";
 import {replaceRegularTextInLlamaText} from "../utils/replaceRegularTextInLlamaText.js";
+import {LruCache} from "../../utils/LruCache.js";
 import {ChatHistoryFunctionCallMessageTemplate, parseFunctionCallMessageTemplate} from "./utils/chatHistoryFunctionCallMessageTemplate.js";
 import {
     templateSegmentOptionsToChatWrapperSettings, TemplateChatWrapperSegmentsOptions
@@ -25,6 +26,9 @@ import {
 } from "./utils/extractFunctionCallSettingsFromJinjaTemplate.js";
 import {squashChatHistoryItems} from "./utils/squashChatHistoryItems.js";
 import {extractSegmentSettingsFromTokenizerAndChatTemplate} from "./utils/extractSegmentSettingsFromTokenizerAndChatTemplate.js";
+import {alignFunctionCallAndSegmentSettings} from "./utils/alignFunctionCallAndSegmentSettings.js";
+import type {Llama} from "../../bindings/Llama.js";
+import type {AddonJinjaRenderer} from "../../bindings/AddonTypes.js";
 
 export type JinjaTemplateChatWrapperOptions = {
     template: string,
@@ -113,7 +117,7 @@ export type JinjaTemplateChatWrapperOptions = {
      *
      * When `false`, all the chain of thoughts from the model responses will be kept in the context state.
      *
-     * The default setting is extracted from the Jinja template, and the extraction fails, defaults to `false`.
+     * The default setting is extracted from the Jinja template, and when the extraction fails, defaults to `false`.
      */
     keepOnlyLastThought?: boolean,
 
@@ -128,7 +132,13 @@ export type JinjaTemplateChatWrapperOptions = {
     _requireFunctionCallSettingsExtraction?: boolean,
 
     /** @internal */
-    _functionCallExtractionExamineNonFirst?: boolean
+    _functionCallExtractionExamineNonFirst?: boolean,
+
+    /** @internal */
+    _cachedJinjaEngine?: CachedJinjaEngine,
+
+    /** @internal */
+    _templateCacheKeys?: object[]
 };
 
 export type JinjaTemplateChatWrapperOptionsConvertMessageFormat = {
@@ -184,13 +194,14 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
     public readonly keepOnlyLastThought: boolean;
     public readonly additionalRenderParameters?: Record<string, any>;
 
-    /** @internal */ private readonly _jinjaTemplate: Template;
+    /** @internal */ private readonly _jinjaTemplate: JinjaRenderer;
     /** @internal */ private readonly _usingJinjaFunctionCallTemplate: boolean = false;
     /** @internal */ private readonly _stringifyFunctionParams: boolean = false;
     /** @internal */ private readonly _wrapFunctionParamsInsideMapKey?: string;
     /** @internal */ private readonly _stringifyFunctionResult: boolean = false;
     /** @internal */ private readonly _combineJinjaModelMessageAndToolCalls: boolean = true;
     /** @internal */ private readonly _endJinjaMessagesWithUserMessage: boolean = false;
+    /** @internal */ private readonly _templateKeepOnlyLastThought: boolean;
 
     /**
      * @param options
@@ -213,7 +224,9 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
             segments,
             tokenizer,
             _requireFunctionCallSettingsExtraction = false,
-            _functionCallExtractionExamineNonFirst = false
+            _functionCallExtractionExamineNonFirst = false,
+            _cachedJinjaEngine = CachedJinjaEngine._create(),
+            _templateCacheKeys = []
         } = options;
 
         if (template == null)
@@ -233,7 +246,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
         if (this.convertUnsupportedSystemMessagesToUserMessages != null && !this.convertUnsupportedSystemMessagesToUserMessages.format.includes("{{message}}"))
             throw new Error('convertUnsupportedSystemMessagesToUserMessages format must include "{{message}}"');
 
-        this._jinjaTemplate = new Template(this.template);
+        this._jinjaTemplate = _cachedJinjaEngine.getFor(_templateCacheKeys, this.template);
 
         this.settings = {
             ...ChatWrapper.defaultSettings,
@@ -291,7 +304,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                             : undefined
                     }).transformedHistory,
                     chatWrapperSettings: this.settings,
-                    useRawValues: false,
+                    useRawValues: true,
                     functions,
                     stringifyFunctionParams,
                     stringifyFunctionResults,
@@ -302,7 +315,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
 
                 const messages = fromIntermediateToCompleteOpenAiMessages(intermediateMessages)
                     .map((item) => {
-                        if (!wipeFunctionCallIds)
+                        if (wipeFunctionCallIds === false)
                             return item;
 
                         if (item.role === "assistant" && item["tool_calls"] != null && item["tool_calls"].length > 0) {
@@ -373,7 +386,11 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                 wipeFunctionCallIds: [true, "align", false],
                 setFunctionNameInResponse: setFunctionNameInResponse == null
                     ? [false]
-                    : [false, setFunctionNameInResponse]
+                    : (typeof setFunctionNameInResponse === "string" || typeof setFunctionNameInResponse === "boolean")
+                        ? [setFunctionNameInResponse]
+                        : setFunctionNameInResponse.type === "fallback"
+                            ? [false, setFunctionNameInResponse.value]
+                            : [false]
             }, ({convertSystemMessagesToUserMessagesFormat, wipeFunctionCallIds, setFunctionNameInResponse}) => {
                 return render(convertSystemMessagesToUserMessagesFormat, wipeFunctionCallIds, setFunctionNameInResponse);
             });
@@ -397,6 +414,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                     this._usingJinjaFunctionCallTemplate = true;
                     this._stringifyFunctionParams = extractedSettings.stringifyParams;
                     this._stringifyFunctionResult = extractedSettings.stringifyResult;
+                    this._combineJinjaModelMessageAndToolCalls = extractedSettings.combineModelMessageAndToolCalls;
                 }
             } catch (err) {
                 // do nothing
@@ -422,15 +440,16 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
             idsGenerator,
             enableReasoning: this.reasoning
         });
-        this.settings = {
+        this.settings = alignFunctionCallAndSegmentSettings({
             ...this.settings,
             functions: functionCallSettings ?? ChatWrapper.defaultSettings.functions,
             segments: {
                 ...this.settings.segments,
                 ...extractedSegmentSettings.settings
             }
-        };
-        this.keepOnlyLastThought = keepOnlyLastThought ?? extractedSegmentSettings.keepOnlyLastThought ?? false;
+        });
+        this._templateKeepOnlyLastThought = extractedSegmentSettings.keepOnlyLastThought ?? false;
+        this.keepOnlyLastThought = keepOnlyLastThought ?? this._templateKeepOnlyLastThought;
     }
 
     /**
@@ -476,7 +495,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
         return LlamaText([
             this.settings.functions.call.prefix,
             name,
-            this.settings.functions.call.paramsPrefix,
+            replaceRegularTextInLlamaText(this.settings.functions.call.paramsPrefix, "{{functionName}}", name),
             (
                 params === undefined
                     ? (emptyCallParamsPlaceholder === undefined || emptyCallParamsPlaceholder === "")
@@ -564,7 +583,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
         });
 
         let transformedSystemMessagesToUserMessages = false;
-        const transformedHistory = convertSystemMessagesToUserMessagesFormat == null
+        let transformedHistory = convertSystemMessagesToUserMessagesFormat == null
             ? historyWithFunctions
             : historyWithFunctions.map((item) => {
                 if (item.type === "system") {
@@ -580,6 +599,56 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
 
                 return item;
             });
+
+        const thoughtSegmentPrefixSettings = this.settings.segments?.thought?.prefix;
+        const thoughtPrefixObjectSetting = (typeof thoughtSegmentPrefixSettings === "object" && !LlamaText.isLlamaText(thoughtSegmentPrefixSettings))
+            ? thoughtSegmentPrefixSettings
+            : undefined;
+        if (thoughtPrefixObjectSetting?.type === "openedOnStart") {
+            const currentTimeString = new Date().toISOString();
+            transformedHistory = transformedHistory.map((item) => {
+                if (item.type !== "model")
+                    return item;
+
+                const newResponse = item.response.slice();
+                if (!isChatModelResponseSegment(item.response[0]) || item.response[0].segmentType !== "thought")
+                    newResponse.unshift({
+                        type: "segment",
+                        segmentType: "thought",
+                        ended: true,
+                        text: "",
+                        startTime: currentTimeString,
+                        endTime: currentTimeString
+                    } satisfies ChatModelSegment);
+
+                let thoughtIsOpen = true;
+                for (let i = 0; i < newResponse.length; i++) {
+                    const item = newResponse[i];
+                    if (isChatModelResponseSegment(item) && item.segmentType === "thought") {
+                        thoughtIsOpen = !item.ended;
+                        continue;
+                    } else if (thoughtPrefixObjectSetting.afterFunctionCalls && isChatModelResponseFunctionCall(item)) {
+                        const nextItem = newResponse[i + 1];
+                        if (!isChatModelResponseFunctionCall(nextItem) && (
+                            nextItem == null || !isChatModelResponseSegment(nextItem) || nextItem.segmentType !== "thought"
+                        ))
+                            newResponse.splice(i + 1, 0, {
+                                type: "segment",
+                                segmentType: "thought",
+                                ended: !thoughtIsOpen,
+                                text: "",
+                                startTime: currentTimeString,
+                                endTime: currentTimeString
+                            } satisfies ChatModelSegment);
+                    }
+                }
+
+                return {
+                    ...item,
+                    response: newResponse
+                };
+            });
+        }
 
         return {
             transformedHistory: joinAdjacentMessagesOfTheSameType
@@ -659,7 +728,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
             return fromChatHistoryToIntermediateOpenAiMessages({
                 chatHistory,
                 chatWrapperSettings: this.settings,
-                useRawValues: false,
+                useRawValues: true,
                 functions: (availableFunctions != null && !documentFunctionParams)
                     ? Object.fromEntries(
                         Object.entries(availableFunctions)
@@ -682,6 +751,16 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                 : generateMessagesWithTools(transformedHistory)
             : generateMessagesWithEmbeddedTools(transformedHistory);
 
+        const thoughtSegmentPrefixSettings = this.settings.segments?.thought?.prefix;
+        const thoughtPrefixObjectSetting = (
+            typeof thoughtSegmentPrefixSettings === "object" &&
+            !LlamaText.isLlamaText(thoughtSegmentPrefixSettings)
+        )
+            ? thoughtSegmentPrefixSettings
+            : undefined;
+        const thoughtPrefixOpenedOnStart = thoughtPrefixObjectSetting?.type === "openedOnStart";
+        const thoughtPrefixOpenedOnStartAfterFunctionCalls = thoughtPrefixObjectSetting?.afterFunctionCalls ?? false;
+
         const idsGenerator = new UniqueIdGenerator(
             this.template + this.modelRoleName + this.userRoleName + this.systemRoleName +
             (convertSystemMessagesToUserMessagesFormat ?? "") +
@@ -699,7 +778,9 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
         const modelMessageIds = new Set<string>();
         const lastModelMessageIds = new Set<string>();
         const messageIds = new Set<string>();
+        const reasoningContentIdToMessageId = new Map<string, string>();
 
+        let canApplyReasoningContentFix = true;
         for (const intermediateMessage of intermediateMessages) {
             if (intermediateMessage.content == null) {
                 jinjaItems.push({
@@ -711,19 +792,34 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
 
             const id = idsGenerator.generateId(intermediateMessage.role === "tool");
 
-            messageIds.add(id);
-            idToContent.set(id, LlamaText(intermediateMessage.content));
-            jinjaItems.push({
+            const message = {
                 ...intermediateMessage,
                 role: jinjaRoleMap[intermediateMessage.role] ?? intermediateMessage.role,
                 content: id
-            } as OpenAiChatMessage);
+            } as OpenAiChatMessage;
+
+            messageIds.add(id);
+            idToContent.set(id, LlamaText(intermediateMessage.content));
+            jinjaItems.push(message);
 
             if (intermediateMessage.role === "assistant" || intermediateMessage.role === "tool") {
                 modelMessageIds.add(id);
                 lastModelMessageIds.add(id);
             } else if (intermediateMessage.role === "user")
                 lastModelMessageIds.clear();
+
+            if (thoughtPrefixOpenedOnStart && canApplyReasoningContentFix && intermediateMessage.role === "assistant" && (
+                this._combineJinjaModelMessageAndToolCalls || intermediateMessage.tool_calls == null ||
+                intermediateMessage.tool_calls.length === 0
+            )) {
+                const reasoningContentId = idsGenerator.generateId();
+                (message as OpenAiChatAssistantMessage)["reasoning_content"] = reasoningContentId;
+                reasoningContentIdToMessageId.set(reasoningContentId, id);
+                canApplyReasoningContentFix = false;
+            } else if ((thoughtPrefixOpenedOnStartAfterFunctionCalls && intermediateMessage.role === "tool") ||
+                intermediateMessage.role === "user"
+            )
+                canApplyReasoningContentFix = true;
         }
 
         const bosTokenId = idsGenerator.generateId();
@@ -749,13 +845,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                 role: this.userRoleName,
                 content: idsGenerator.generateId()
             } as OpenAiChatMessage);
-        } else if (
-            lastJinjaItem?.role === this.modelRoleName &&
-            typeof this.settings.segments?.thought?.prefix === "object" &&
-            !LlamaText.isLlamaText(this.settings.segments?.thought?.prefix) &&
-            this.settings.segments?.thought?.prefix.type === "openedOnStart" &&
-            typeof lastJinjaItem.content === "string"
-        ) {
+        } else if (lastJinjaItem?.role === this.modelRoleName && thoughtPrefixOpenedOnStart && typeof lastJinjaItem.content === "string") {
             (lastJinjaItem as OpenAiChatAssistantMessage)["reasoning_content"] = lastJinjaItem.content;
             lastJinjaItem.content = "";
         }
@@ -808,7 +898,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
         };
 
         const renderJinjaAndSplitIntoParts = () => {
-            const splitJinjaParts = splitText(renderJinjaText(), [...idToContent.keys()]);
+            const splitJinjaParts = splitText(renderJinjaText(), [...idToContent.keys(), ...reasoningContentIdToMessageId.keys()]);
 
             if (lastItemIsModelMessage) {
                 let lastModelResponseIndex = -1;
@@ -816,7 +906,7 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
                 for (let i = splitJinjaParts.length - 1; i >= 0; i--) {
                     const part = splitJinjaParts[i];
 
-                    if (part == null || typeof part === "string")
+                    if (part == null || typeof part === "string" || reasoningContentIdToMessageId.has(part.separator))
                         continue;
 
                     if (modelMessageIds.has(part.separator)) {
@@ -849,22 +939,50 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
 
         const messageIdsLeftToProcess = new Set(messageIds);
         const standardizedSegmentDefinition = getStandardizedChatWrapperSegmentDefinition(this.settings, "thought");
-        const thoughSegmentPrefix = getLlamaTextOnlyText(standardizedSegmentDefinition?.prefix);
-        const thoughSegmentSuffix = getLlamaTextOnlyText(standardizedSegmentDefinition?.suffix);
+        const thoughtSegmentPrefix = getLlamaTextOnlyText(standardizedSegmentDefinition?.prefix);
+        const thoughtSegmentSuffix = getLlamaTextOnlyText(standardizedSegmentDefinition?.suffix);
         let inLastModelResponseSection: boolean | null = (
-            thoughSegmentPrefix == null ||
-            thoughSegmentSuffix == null ||
+            thoughtSegmentPrefix == null ||
+            thoughtSegmentSuffix == null ||
             this.settings.segments?.thought?.openOnResponseStart !== true
         )
             ? null
             : false;
         const llamaTextContent: Array<LlamaText | SpecialToken | SpecialTokensText> = [];
+        let functionCallingPrefixTextsCache: string[] | undefined;
         for (let i = 0; i < splitJinjaParts.length; i++) {
             const part = splitJinjaParts[i]!;
 
             if (typeof part === "string") {
                 // things that are not message content can be tokenized with special tokens
                 llamaTextContent.push(new SpecialTokensText(part));
+                continue;
+            }
+
+            // if this part is a reasoning content, skip over to the corresponding message content
+            const reasoningMessageId = thoughtPrefixOpenedOnStart
+                ? reasoningContentIdToMessageId.get(part.separator)
+                : undefined;
+            if (reasoningMessageId != null) {
+                for (let j = i + 1; j < splitJinjaParts.length && j < i + 1 + 2; j++) {
+                    const nextPart = splitJinjaParts[j]!;
+                    if (typeof nextPart === "string") {
+                        functionCallingPrefixTextsCache ??= getPossibleFunctionCallingPrefixTexts(this)
+                            .map(getLlamaTextOnlyText)
+                            .filter((text) => text != null);
+
+                        if (functionCallingPrefixTextsCache.some((text) => nextPart.includes(text)))
+                            break;
+
+                        continue;
+                    }
+
+                    if (nextPart.separator === reasoningMessageId) {
+                        i = j - 1;
+                        break;
+                    }
+                }
+
                 continue;
             }
 
@@ -882,18 +1000,18 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
             // segment rendered by the chat wrapper
             if (inLastModelResponseSection === true) {
                 const lastPart = llamaTextContent.at(-1);
-                if (lastPart instanceof SpecialTokensText && thoughSegmentPrefix != null && thoughSegmentSuffix != null) {
-                    const thoughPrefixIndex = lastPart.value.indexOf(thoughSegmentPrefix);
+                if (lastPart instanceof SpecialTokensText && thoughtSegmentPrefix != null && thoughtSegmentSuffix != null) {
+                    const thoughPrefixIndex = lastPart.value.indexOf(thoughtSegmentPrefix);
                     const thoughSuffixIndex = thoughPrefixIndex >= 0
-                        ? lastPart.value.indexOf(thoughSegmentSuffix, thoughPrefixIndex + thoughSegmentPrefix.length)
+                        ? lastPart.value.indexOf(thoughtSegmentSuffix, thoughPrefixIndex + thoughtSegmentPrefix.length)
                         : -1;
 
                     if (thoughPrefixIndex >= 0 && thoughSuffixIndex >= 0) {
-                        const thoughtText = lastPart.value.slice(thoughPrefixIndex + thoughSegmentPrefix.length, thoughSuffixIndex);
+                        const thoughtText = lastPart.value.slice(thoughPrefixIndex + thoughtSegmentPrefix.length, thoughSuffixIndex);
                         if (thoughtText.trim() === "")
                             llamaTextContent[llamaTextContent.length - 1] = new SpecialTokensText(
                                 lastPart.value.slice(0, thoughPrefixIndex) +
-                                lastPart.value.slice(thoughSuffixIndex + thoughSegmentSuffix.length)
+                                lastPart.value.slice(thoughSuffixIndex + thoughtSegmentSuffix.length)
                             );
                     }
                 }
@@ -987,6 +1105,102 @@ export class JinjaTemplateChatWrapper extends ChatWrapper {
     }
 }
 
+export class CachedJinjaEngine {
+    private _llama?: Llama;
+    private _cache: LruCache<string, JinjaRenderer> = new LruCache(40);
+    private _weakCache = new WeakMap<object, JinjaRenderer>();
+
+    private constructor(_llama?: Llama) {
+        this._llama = _llama;
+    }
+
+    public getFor(keys: Array<object>, template: string): JinjaRenderer {
+        let renderer: JinjaRenderer | undefined;
+        for (const key of keys) {
+            renderer = this._weakCache.get(key);
+            if (renderer != null)
+                break;
+        }
+
+        if (renderer == null) {
+            renderer = this._cache.get(template);
+
+            if (renderer == null)
+                renderer = JinjaRenderer._create(this._llama, template);
+        }
+
+        for (const key of keys)
+            this._weakCache.set(key, renderer);
+
+        this._cache.set(renderer._template, renderer);
+
+        return renderer;
+    }
+
+    /** @internal */
+    public static _create(_llama?: Llama) {
+        return new CachedJinjaEngine(_llama);
+    }
+}
+
+export class JinjaRenderer {
+    /** @internal */ public _template: string;
+    /** @internal */ private _llama?: Llama;
+    /** @internal */ private _jsRenderer?: null | Template;
+    /** @internal */ private _jsRendererError?: unknown;
+    /** @internal */ private _nativeRenderer?: null | AddonJinjaRenderer;
+    /** @internal */ private _nativeRendererInitError?: unknown;
+
+    private constructor(llama: Llama | undefined, template: string) {
+        this._llama = llama;
+        this._template = template;
+    }
+
+    public render(items?: Record<string, unknown>): string {
+        try {
+            if (this._jsRenderer === undefined)
+                this._jsRenderer = new Template(this._template);
+        } catch (error) {
+            this._jsRenderer = null;
+            this._jsRendererError = error;
+        }
+
+        if (this._jsRenderer != null)
+            return this._jsRenderer.render(items);
+
+        try {
+            if (this._nativeRenderer === undefined && this._llama != null)
+                this._nativeRenderer = new this._llama._bindings.AddonJinjaRenderer(this._template);
+        } catch (error) {
+            this._nativeRenderer = null;
+            this._nativeRendererInitError = error;
+        }
+
+        if (this._nativeRenderer != null)
+            return this._nativeRenderer.render(items);
+
+        if (this._jsRendererError != null && this._nativeRendererInitError != null)
+            throw new AggregateError(
+                [this._jsRendererError, this._nativeRendererInitError],
+                "Jinja renderer failed. " +
+                String((this._jsRendererError as Error)?.message ?? this._jsRendererError) + ". " +
+                String((this._nativeRendererInitError as Error)?.message ?? this._nativeRendererInitError),
+                {cause: this._jsRendererError}
+            );
+        else if (this._jsRendererError != null)
+            throw this._jsRendererError;
+        else if (this._nativeRendererInitError != null)
+            throw this._nativeRendererInitError;
+
+        throw new Error("Failed to render Jinja template");
+    }
+
+    /** @internal */
+    public static _create(llama: Llama | undefined, template: string) {
+        return new JinjaRenderer(llama, template);
+    }
+}
+
 function resolveConvertUnsupportedSystemMessagesToUserMessagesOption(
     convertUnsupportedSystemMessagesToUserMessages?: JinjaTemplateChatWrapperOptions["convertUnsupportedSystemMessagesToUserMessages"]
 ): JinjaTemplateChatWrapperOptionsConvertMessageFormat | undefined {
@@ -1041,6 +1255,26 @@ function getLlamaTextOnlyText(llamaText: LlamaText | string | undefined): string
     }
 
     return texts.join("");
+}
+
+function getPossibleFunctionCallingPrefixTexts(chatWrapper: ChatWrapper) {
+    const res: LlamaText[] = [];
+
+    for (const sectionPrefix of [
+        chatWrapper.settings.functions?.parallelism?.call?.sectionPrefix ?? "",
+        ...(chatWrapper.settings.functions?.parallelism?.call.sectionPrefixAlternateMatches ?? [])
+    ]) {
+        for (const prefix of [
+            chatWrapper.settings.functions.call.prefix,
+            ...(chatWrapper.settings.functions.call.prefixAlternateMatches ?? [])
+        ])
+            res.push(LlamaText([
+                sectionPrefix,
+                prefix
+            ]));
+    }
+
+    return res;
 }
 
 const chatHistoriesForSanityTest: ChatHistoryItem[][] = [

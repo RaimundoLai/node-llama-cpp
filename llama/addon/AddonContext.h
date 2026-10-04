@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include <shared_mutex>
 
 #include "llama.h"
 #include "napi.h"
@@ -11,8 +12,8 @@ class AddonContext : public Napi::ObjectWrap<AddonContext> {
     public:
         AddonModel* model;
         llama_context_params context_params;
-        llama_context* ctx;
-        llama_batch batch;
+        llama_context* ctx = nullptr;
+        llama_batch batch{};
         uint64_t batchMemorySize = 0;
         bool has_batch = false;
         int32_t batch_n_tokens = 0;
@@ -21,6 +22,12 @@ class AddonContext : public Napi::ObjectWrap<AddonContext> {
         uint64_t loadedContextMemorySize = 0;
         bool contextLoaded = false;
         std::mutex disposeMutex;
+
+        struct SharedSamplerData {
+            std::mutex mutex;
+            bool gotLogit = false;
+            bool hasLogits = false;
+        } sharedSamplerData;
 
         bool disposed = false;
         bool memoryDisposed = false;
@@ -62,17 +69,19 @@ class AddonContext : public Napi::ObjectWrap<AddonContext> {
 
         Napi::Value SetLoras(const Napi::CallbackInfo& info);
         Napi::Value RestoreCheckpoint(const Napi::CallbackInfo& info);
+        Napi::Value CopySequenceStateFromOtherSequence(const Napi::CallbackInfo& info);
 
         static void init(Napi::Object exports);
 };
 
 class AddonContextSequenceCheckpoint : public Napi::ObjectWrap<AddonContextSequenceCheckpoint> {
     public:
-        std::mutex dataMutex;
+        std::shared_mutex dataMutex;
         std::vector<uint8_t> data;
-        llama_seq_id sequenceId = 0;
-        std::size_t minPos = 0;
-        std::size_t maxPos = 0;
+        llama_pos minPos = -1;
+        llama_pos maxPos = -1;
+        bool initialized = false;
+        bool disposed = false;
 
         AddonContextSequenceCheckpoint(const Napi::CallbackInfo& info);
         ~AddonContextSequenceCheckpoint();

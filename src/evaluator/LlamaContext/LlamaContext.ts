@@ -56,6 +56,14 @@ export const internalCheckpoints = {
     chatGrammarEnd: {
         name: "grammarEnd",
         maxCheckpoints: 1
+    },
+    decisions: {
+        name: "decisions",
+        maxCheckpoints: 1
+    },
+    choiceDecision: {
+        name: "choiceDecision",
+        maxCheckpoints: 1
     }
 };
 
@@ -291,6 +299,17 @@ export class LlamaContext {
 
     public get sequencesLeft() {
         return this._totalSequences - this._nextGeneratedSequenceId + this._unusedSequenceIds.length;
+    }
+
+    /** Assumed memory footprint of the context in bytes */
+    public get memoryUsage(): {
+        ram: number,
+        vram: number
+    } {
+        return {
+            ram: this._ramConsumptionMarking?.size ?? 0,
+            vram: this._vramConsumptionMarking?.size ?? 0
+        };
     }
 
     /**
@@ -1302,7 +1321,9 @@ export class LlamaContextSequence {
                 await this._eraseContextTokenRanges([{
                     start: firstDifferentIndex,
                     end: this._nextTokenIndex
-                }]);
+                }], {
+                    avoidEvaluation: true
+                });
 
             return;
         }
@@ -1337,7 +1358,9 @@ export class LlamaContextSequence {
             });
 
         if (eraseRanges.length > 0)
-            await this._eraseContextTokenRanges(eraseRanges);
+            await this._eraseContextTokenRanges(eraseRanges, {
+                avoidEvaluation: true
+            });
     }
 
     /**
@@ -1364,11 +1387,13 @@ export class LlamaContextSequence {
         {
             canResetTokenPredictor = true,
             canRemovePredictionTokens = true,
-            skipLock = false
+            skipLock = false,
+            avoidEvaluation = false
         }: {
             canResetTokenPredictor?: boolean,
             canRemovePredictionTokens?: boolean,
-            skipLock?: boolean
+            skipLock?: boolean,
+            avoidEvaluation?: boolean
         } = {}
     ) {
         this._ensureNotDisposed();
@@ -1483,14 +1508,18 @@ export class LlamaContextSequence {
                 existingCheckpoint.maxPos <= this.contextSize
             ) {
                 restoreCheckpointIndex = Math.min(restoreCheckpointIndex, existingCheckpoint.maxPos);
-                const restoredSuccessfully = await this._context._ctx.restoreCheckpoint(existingCheckpoint, restoreCheckpointIndex);
+                const restoredSuccessfully = await this._context._ctx.restoreCheckpoint(
+                    existingCheckpoint,
+                    restoreCheckpointIndex,
+                    this._sequenceId
+                );
                 if (restoredSuccessfully) {
                     const tokensToEvaluate = this._contextTokens.slice(restoreCheckpointIndex + 1);
                     this._contextTokens = this._contextTokens.slice(0, restoreCheckpointIndex + 1);
                     this._nextTokenIndex = restoreCheckpointIndex + 1;
 
                     // wait for the evaluation outside the "context" lock to avoid deadlocks
-                    if (tokensToEvaluate.length > 0)
+                    if (!avoidEvaluation && tokensToEvaluate.length > 0)
                         awaitEvaluationPromise = this.evaluateWithoutGeneratingNewTokens(tokensToEvaluate, {_skipLock: skipLock});
                     return;
                 }
@@ -1502,7 +1531,7 @@ export class LlamaContextSequence {
             this._contextTokens = [];
 
             // wait for the evaluation outside the "context" lock to avoid deadlocks
-            if (newSequenceTokens.length > 0)
+            if (!avoidEvaluation && newSequenceTokens.length > 0)
                 awaitEvaluationPromise = this.evaluateWithoutGeneratingNewTokens(newSequenceTokens, {_skipLock: skipLock});
         });
 
@@ -1740,7 +1769,18 @@ export class LlamaContextSequence {
             if (item instanceof Array) {
                 const [token, options] = item;
                 const generateNext = options?.generateNext ?? {};
-                if (generateNext.probabilities === true || generateNext.confidence === true || generateNext.token === true)
+                if (
+                    generateNext.probabilities === true || generateNext.confidence === true || generateNext.token === true ||
+                    generateNext.totalLogitWeight === true || generateNext.logits === true || (
+                        typeof generateNext.logits === "object" && (
+                            generateNext.logits.filter?.includeMax ||
+                            generateNext.logits.filter?.includeMin ||
+                            generateNext.logits.filter?.includeSelected ||
+                            (generateNext.logits.filter?.tokens?.length ?? 0) > 0 ||
+                            (generateNext.logits.filter?.includeTop ?? 0) > 0
+                        )
+                    )
+                )
                     logitsArray[index] = true;
 
                 return token;
@@ -1767,7 +1807,17 @@ export class LlamaContextSequence {
                     if (generateNext == null || (
                         (generateNext.probabilities == null || !generateNext.probabilities) &&
                         (generateNext.token == null || !generateNext.token) &&
-                        (generateNext.confidence == null || !generateNext.confidence)
+                        (generateNext.confidence == null || !generateNext.confidence) &&
+                        (generateNext.totalLogitWeight == null || !generateNext.totalLogitWeight) &&
+                        (generateNext.logits == null || generateNext.logits === false || (
+                            typeof generateNext.logits === "object" && (
+                                generateNext.logits.filter?.includeMax !== true &&
+                                generateNext.logits.filter?.includeMin !== true &&
+                                generateNext.logits.filter?.includeSelected !== true &&
+                                (generateNext.logits.filter?.tokens?.length ?? 0) === 0 &&
+                                (generateNext.logits.filter?.includeTop ?? 0) === 0
+                            )
+                        ))
                     ))
                         return undefined;
 
@@ -1789,11 +1839,23 @@ export class LlamaContextSequence {
                             return undefined;
 
                         sampler.applyConfig(samplerConfig);
-                        const [token, probabilities, confidence] = await this._context._ctx.sampleToken(
+                        const [token, probabilities, confidence, logits, totalLogitWeight] = await this._context._ctx.sampleToken(
                             batchLogitIndex,
                             sampler._sampler,
                             !!generateNext.probabilities,
-                            !!generateNext.confidence
+                            !!generateNext.confidence,
+                            (generateNext.logits == null || generateNext.logits === false)
+                                ? false
+                                : generateNext.logits === true
+                                    ? true
+                                    : [
+                                        generateNext.logits.filter.tokens ?? [],
+                                        generateNext.logits.filter.includeMax ?? false,
+                                        generateNext.logits.filter.includeMin ?? false,
+                                        generateNext.logits.filter.includeSelected ?? false,
+                                        Math.max(0, generateNext.logits.filter.includeTop ?? 0)
+                                    ],
+                            !!generateNext.totalLogitWeight
                         );
 
                         const output: ControlledEvaluateIndexOutput = {
@@ -1809,7 +1871,13 @@ export class LlamaContextSequence {
                             output.next.confidence = confidence;
 
                         if (probabilities != null)
-                            output.next.probabilities = reviveTokenProbabilities(probabilities);
+                            output.next.probabilities = reviveTokenValuePair(probabilities);
+
+                        if (logits != null)
+                            output.next.logits = reviveTokenValuePair(logits);
+
+                        if (totalLogitWeight != null)
+                            output.next.totalLogitWeight = totalLogitWeight;
 
                         onTokenResult?.(tokenIndex, output);
 
@@ -1945,6 +2013,38 @@ export class LlamaContextSequence {
         return await withLock([this._context, "context"], () => {
             return this._takeCheckpoint(name, maxNamedCheckpoints);
         });
+    }
+
+    /**
+     * Doesn't work with token predictors
+     * @internal
+     */
+    public async _copyStateFromOtherSequence(otherSequence: LlamaContextSequence, upToTokenIndex: number) {
+        if (this === otherSequence)
+            return true;
+
+        using lock = await acquireLock([this._context, "context"]);
+
+        this._contextTokens = otherSequence._contextTokens.slice(0);
+        this._nextTokenIndex = this._contextTokens.length;
+        this._loadedTokenPredictions = [];
+        this._checkpoints.cloneCheckpointsStateFrom(otherSequence._checkpoints);
+
+        const copiedMaxIndex = await this._context._ctx.copySequenceStateFromOtherSequence(
+            this._sequenceId,
+            otherSequence._sequenceId
+        );
+        if (copiedMaxIndex === this._contextTokens.length - 1) {
+            if (this._nextTokenIndex > upToTokenIndex) {
+                const erasePromise = this._eraseContextTokenRanges([{start: upToTokenIndex, end: this._nextTokenIndex}]);
+                lock.dispose();
+                await erasePromise;
+            }
+
+            return this._nextTokenIndex === upToTokenIndex;
+        }
+
+        return false;
     }
 
     /**
@@ -2163,7 +2263,7 @@ export class LlamaContextSequence {
                         nextToken = token;
 
                         if (probabilities != null)
-                            yieldRes.probabilities = reviveTokenProbabilities(probabilities);
+                            yieldRes.probabilities = reviveTokenValuePair(probabilities);
 
                         if (confidence != null)
                             yieldRes.confidence = confidence;
@@ -2262,7 +2362,7 @@ export class LlamaContextSequence {
                         yieldRes.token = nextToken;
 
                         if (probabilities != null)
-                            yieldRes.probabilities = reviveTokenProbabilities(probabilities);
+                            yieldRes.probabilities = reviveTokenValuePair(probabilities);
 
                         if (confidence != null)
                             yieldRes.confidence = confidence;
@@ -2426,7 +2526,7 @@ export class LlamaContextSequence {
                                 yieldRes.token = nextToken;
 
                                 if (probabilities != null)
-                                    yieldRes.probabilities = reviveTokenProbabilities(probabilities);
+                                    yieldRes.probabilities = reviveTokenValuePair(probabilities);
 
                                 if (confidence != null)
                                     yieldRes.confidence = confidence;
@@ -2569,7 +2669,7 @@ export class LlamaContextSequence {
             dryRepeatPenaltyStrength: (dryRepeatPenalty?.strength == null || dryRepeatPenalty?.strength === 0)
                 ? undefined
                 : Math.max(0, dryRepeatPenalty?.strength),
-            dryRepeatPenaltyBase: dryRepeatPenalty?.base,
+            dryRepeatPenaltyBase: dryRepeatPenalty?.base ?? 1.75,
             dryRepeatPenaltyAllowedLength: Math.max(1, dryRepeatPenalty?.allowedLength ?? 2),
             dryRepeatPenaltyLastTokens: dryRepeatPenalty?.lastTokens == null
                 ? -1
@@ -2619,7 +2719,7 @@ export class LlamaContextSequence {
             }
 
             const tokensToDecode = tokensLeftToDecode.splice(0, freeSpace);
-            const tokensLogits = tokenLogitsLeftToDecode.slice(0, tokensToDecode.length);
+            const tokensLogits = tokenLogitsLeftToDecode.splice(0, tokensToDecode.length);
 
             const generatedLogits = await this._context._decodeTokens({
                 sequenceId: this._sequenceId,
@@ -2780,15 +2880,15 @@ function getTokenBiasesForAddon(tokenBias: undefined | TokenBias | (() => TokenB
     };
 }
 
-function reviveTokenProbabilities(probabilities?: (Token | number)[]) {
-    if (probabilities == null)
+function reviveTokenValuePair(valuePairArray?: (Token | number)[]) {
+    if (valuePairArray == null)
         return undefined;
 
     const res = new Map<Token, number>();
 
-    for (let i = 1; i < probabilities.length; i += 2) {
-        const token = probabilities[i - 1]! as Token;
-        const probability = probabilities[i]! as number;
+    for (let i = 1; i < valuePairArray.length; i += 2) {
+        const token = valuePairArray[i - 1]! as Token;
+        const probability = valuePairArray[i]! as number;
 
         res.set(token, probability);
     }

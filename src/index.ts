@@ -17,7 +17,16 @@ import {LlamaGrammarEvaluationState, LlamaGrammarEvaluationStateOptions} from ".
 import {LlamaContext, LlamaContextSequence} from "./evaluator/LlamaContext/LlamaContext.js";
 import {LlamaEmbeddingContext, type LlamaEmbeddingContextOptions} from "./evaluator/LlamaEmbeddingContext.js";
 import {LlamaEmbedding, type LlamaEmbeddingOptions, type LlamaEmbeddingJSON} from "./evaluator/LlamaEmbedding.js";
-import {LlamaRankingContext, type LlamaRankingContextOptions} from "./evaluator/LlamaRankingContext.js";
+import {LlamaRankingContext, type LlamaRankingContextOptions, type RankingOptions} from "./evaluator/LlamaRankingContext.js";
+import {
+    LlamaDecisionContext, type LlamaDecisionContextOptions, type LlamaDecisionContextDecideOptions,
+    type LlamaDecisionContextDecideResponse
+} from "./evaluator/LlamaDecisionContext/LlamaDecisionContext.js";
+import {
+    type DecisionQuestion, type DecisionNoulQuestion, type DecisionChoiceQuestion, type DecisionScoreQuestion,
+    type DecisionAnswer, type DecisionNoulAnswer, type DecisionChoiceAnswer, type DecisionScoreAnswer,
+    type DecisionQuestions, type DecisionAnswers
+} from "./evaluator/LlamaDecisionContext/types.js";
 import {
     type LlamaContextOptions, type SequenceEvaluateOptions, type BatchingOptions, type LlamaContextSequenceRepeatPenalty,
     type CustomBatchingDispatchSchedule, type CustomBatchingPrioritizationStrategy, type BatchItem, type PrioritizedBatchItem,
@@ -29,12 +38,13 @@ import {TokenBias} from "./evaluator/TokenBias.js";
 import {
     LlamaChatSession, type LlamaChatSessionOptions, type LlamaChatSessionContextShiftOptions, type LLamaChatPromptOptions,
     type LLamaChatCompletePromptOptions, type LlamaChatSessionRepeatPenalty, type LLamaChatPreloadPromptOptions,
-    type LlamaChatSessionDryRepeatPenalty
+    type LlamaChatSessionDecideOptions, type LlamaChatSessionDryRepeatPenalty
 } from "./evaluator/LlamaChatSession/LlamaChatSession.js";
 import {defineChatSessionFunction} from "./evaluator/LlamaChatSession/utils/defineChatSessionFunction.js";
 import {
     LlamaChat, type LlamaChatOptions, type LLamaChatGenerateResponseOptions, type LLamaChatLoadAndCompleteUserMessageOptions,
-    type LLamaChatContextShiftOptions, type LlamaChatResponse, type LlamaChatResponseFunctionCall,
+    type LlamaChatGenerateDecisionsOptions, type LlamaChatGenerateDecisionsResponse, type LLamaChatContextShiftOptions,
+    type LlamaChatResponse, type LlamaChatResponseFunctionCall,
     type LlamaChatLoadAndCompleteUserResponse, type LlamaChatResponseChunk, type LlamaChatResponseTextChunk,
     type LlamaChatResponseSegmentChunk, type LlamaChatResponseFunctionCallParamsChunk, type LlamaChatResponseSegment
 } from "./evaluator/LlamaChat/LlamaChat.js";
@@ -181,6 +191,21 @@ export {
     type LlamaEmbeddingJSON,
     LlamaRankingContext,
     type LlamaRankingContextOptions,
+    type RankingOptions,
+    LlamaDecisionContext,
+    type LlamaDecisionContextOptions,
+    type LlamaDecisionContextDecideOptions,
+    type LlamaDecisionContextDecideResponse,
+    type DecisionQuestion,
+    type DecisionNoulQuestion,
+    type DecisionChoiceQuestion,
+    type DecisionScoreQuestion,
+    type DecisionAnswer,
+    type DecisionNoulAnswer,
+    type DecisionChoiceAnswer,
+    type DecisionScoreAnswer,
+    type DecisionQuestions,
+    type DecisionAnswers,
     LlamaChatSession,
     defineChatSessionFunction,
     type LlamaChatSessionOptions,
@@ -190,10 +215,13 @@ export {
     type LlamaChatSessionRepeatPenalty,
     type LlamaChatSessionDryRepeatPenalty,
     type LLamaChatPreloadPromptOptions,
+    type LlamaChatSessionDecideOptions,
     LlamaChat,
     type LlamaChatOptions,
     type LLamaChatGenerateResponseOptions,
     type LLamaChatLoadAndCompleteUserMessageOptions,
+    type LlamaChatGenerateDecisionsOptions,
+    type LlamaChatGenerateDecisionsResponse,
     type LLamaChatContextShiftOptions,
     type LLamaContextualRepeatPenalty,
     type LLamaContextualDryRepeatPenalty,

@@ -17,6 +17,7 @@ import {LlamaText, LlamaTextJSON} from "../../utils/LlamaText.js";
 import {wrapAbortSignal} from "../../utils/wrapAbortSignal.js";
 import {safeEventCallback} from "../../utils/safeEventCallback.js";
 import {GgufArchitectureType} from "../../gguf/types/GgufMetadataTypes.js";
+import {DecisionAnswers, DecisionQuestions} from "../LlamaDecisionContext/types.js";
 import {
     LLamaChatPromptCompletionEngineOptions, LlamaChatSessionPromptCompletionEngine
 } from "./utils/LlamaChatSessionPromptCompletionEngine.js";
@@ -411,6 +412,39 @@ export type LLamaChatPreloadPromptOptions = {
     evaluationPriority?: LLamaChatCompletePromptOptions["evaluationPriority"],
     functions?: LLamaChatCompletePromptOptions["functions"],
     documentFunctionParams?: LLamaChatCompletePromptOptions["documentFunctionParams"]
+};
+
+export type LlamaChatSessionDecideOptions = {
+    /**
+     * An optional document to add to the context window before a question.
+     * Only added for generating decisions in this call; won't be appended to the actual chat history.
+     *
+     * Will be put in the same user message as the question, with `"\n\n"` in between the document and the question.
+     *
+     * Note that a long document can incur a context shift, so make sure to not use a too big document.
+     */
+    document?: string,
+
+    signal?: LLamaChatCompletePromptOptions["signal"],
+    evaluationPriority?: LLamaChatCompletePromptOptions["evaluationPriority"],
+
+    /**
+     * Functions are not used by the model here,
+     * but are used for keeping the instructions given to the model about the functions in the current context state,
+     * to avoid context shifts.
+     *
+     * It's best to provide the same functions that were used for the previous prompt here.
+     */
+    functions?: ChatSessionModelFunctions,
+
+    /**
+     * Functions are not used by the model here,
+     * but are used for keeping the instructions given to the model about the functions in the current context state,
+     * to avoid context shifts.
+     *
+     * It's best to provide the same value that was used for the previous prompt here.
+     */
+    documentFunctionParams?: boolean
 };
 
 export type LlamaChatSessionRepeatPenalty = {
@@ -1232,6 +1266,83 @@ export class LlamaChatSession {
             this._preloadAndCompleteAbortControllers.delete(abortController);
             disposeAbortController();
         }
+    }
+
+    public async decide<const Questions extends DecisionQuestions>(
+        questions: Questions,
+        options: LlamaChatSessionDecideOptions = {}
+    ): Promise<DecisionAnswers<Questions>> {
+        return (await this.decideWithMeta(questions, options)).answers;
+    }
+
+    public async decideWithMeta<const Questions extends DecisionQuestions>(
+        questions: Questions,
+        options: LlamaChatSessionDecideOptions = {}
+    ): Promise<{
+        answers: DecisionAnswers<Questions>,
+        tokenUsage: {
+            input: number,
+            output: number
+        }
+    }> {
+        const {
+            document,
+            signal,
+            evaluationPriority,
+            functions,
+            documentFunctionParams
+        } = options;
+        this._ensureNotDisposed();
+
+        this._stopAllPreloadAndPromptCompletions();
+        return await withLock([this._chatLock, "evaluation"], signal, async (): Promise<{
+            answers: DecisionAnswers<Questions>,
+            tokenUsage: {
+                input: number,
+                output: number
+            }
+        }> => {
+            this._ensureNotDisposed();
+            this._stopAllPreloadAndPromptCompletions();
+
+            if (this._chat == null)
+                throw new DisposedError();
+
+            const lastEvaluation = this._canUseContextWindowForCompletion
+                ? this._lastEvaluation
+                : undefined;
+
+            const {
+                lastEvaluation: currentLastEvaluation,
+                answers,
+                tokenUsage
+            } = await this._chat.generateDecisions(this._chatHistory, questions, {
+                document,
+                signal,
+                evaluationPriority,
+                functions,
+                documentFunctionParams,
+                lastEvaluationContextWindow: {
+                    history: lastEvaluation?.contextWindow
+                },
+                contextShift: {
+                    ...this._contextShift,
+                    lastEvaluationMetadata: lastEvaluation?.contextShiftMetadata
+                }
+            });
+
+            this._lastEvaluation = {
+                cleanHistory: this._chatHistory,
+                contextWindow: currentLastEvaluation.contextWindow,
+                contextShiftMetadata: currentLastEvaluation.contextShiftMetadata
+            };
+            this._canUseContextWindowForCompletion = true;
+
+            return {
+                answers,
+                tokenUsage
+            };
+        });
     }
 
     public getChatHistory() {

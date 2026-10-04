@@ -117,7 +117,7 @@ export async function compileLlamaCpp(buildOptions: BuildOptions, compileOptions
                 )
                     cmakeToolchainOptions.set("GGML_VULKAN_SHADERS_GEN_TOOLCHAIN", toolchainFile);
 
-                if (buildOptions.gpu === "metal" && process.platform === "darwin" && !cmakeCustomOptions.has("GGML_METAL"))
+                if (buildOptions.gpu === "metal" && platform === "mac" && !cmakeCustomOptions.has("GGML_METAL"))
                     cmakeCustomOptions.set("GGML_METAL", "1");
                 else if (!cmakeCustomOptions.has("GGML_METAL"))
                     cmakeCustomOptions.set("GGML_METAL", "OFF");
@@ -725,6 +725,8 @@ function getParallelBuildThreadsToUse(platform: BinaryPlatform, gpu?: BuildGpu, 
     const cpuCount = os.cpus().length;
 
     if (ciMode && platform === "win" && gpu === "cuda" && cpuCount === 4)
+        return 3; // workaround for `compiler is out of heap space` error on GitHub Actions on Windows when building with CUDA
+    else if (ciMode && platform === "win" && gpu === "vulkan" && cpuCount === 4)
         return 3; // workaround for `compiler is out of heap space` error on GitHub Actions on Windows when building with CUDA
 
     if (cpuCount <= 4)

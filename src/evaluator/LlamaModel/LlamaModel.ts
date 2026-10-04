@@ -21,6 +21,7 @@ import {maxRecentDetokenizerTokens} from "../../consts.js";
 import {LlamaRankingContext, LlamaRankingContextOptions} from "../LlamaRankingContext.js";
 import {GgmlType, resolveGgmlTypeOption} from "../../gguf/types/GgufTensorInfoTypes.js";
 import {MemoryMarking} from "../../bindings/utils/MemoryOrchestrator.js";
+import {LlamaDecisionContext, LlamaDecisionContextOptions} from "../LlamaDecisionContext/LlamaDecisionContext.js";
 import {TokenAttribute, TokenAttributes} from "./utils/TokenAttributes.js";
 import type {Llama} from "../../bindings/Llama.js";
 import type {BuiltinSpecialTokenValue} from "../../utils/LlamaText.js";
@@ -109,6 +110,21 @@ export type LlamaModelOptions = {
      * Defaults to `false`.
      */
     checkTensors?: boolean,
+
+    /**
+     * Lazily read tensors from the file on demand when they are needed, rather than loading all tensors upfront.
+     * Only works when mmap ({@link useMmap `useMmap`}) is enabled.
+     *
+     * This will cause the inference to potentially start slower the first time a tensor is accessed,
+     * but can significantly reduce the total amount of memory used by the model.
+     *
+     * - `true`: for supported tensors, read them on demand then they are needed
+     * - `"auto"`: for supported tensors, only read on demand ones that are larger than 4GiB
+     * - `false`: do not read tensors on demand, load all tensors upfront
+     *
+     * Defaults to `false`.
+     */
+    lazyMode?: "auto" | boolean,
 
     /**
      * Enable flash attention by default for contexts created with this model.
@@ -216,6 +232,7 @@ export class LlamaModel {
     /** @internal */ private readonly _fileInsights: GgufInsights;
     /** @internal */ private readonly _gpuLayers: number;
     /** @internal */ public readonly _useMmap: boolean;
+    /** @internal */ private readonly _lazyMode: "auto" | boolean;
     /** @internal */ private readonly _vocabOnly: boolean;
     /** @internal */ private readonly _filename?: string;
     /** @internal */ private readonly _disposedState: DisposedState = {disposed: false};
@@ -239,8 +256,8 @@ export class LlamaModel {
     public readonly onDispose = new EventRelay<void>();
 
     private constructor({
-        modelPath, gpuLayers, vocabOnly = false, useMmap, useDirectIo, useMlock = false, checkTensors, onLoadProgress, loadSignal,
-        metadataOverrides
+        modelPath, gpuLayers, vocabOnly = false, useMmap, useDirectIo, useMlock = false, checkTensors, lazyMode, onLoadProgress,
+        loadSignal, metadataOverrides
     }: LlamaModelOptions & {
         gpuLayers: number,
         useMmap: boolean
@@ -276,6 +293,13 @@ export class LlamaModel {
         this._gpuLayers = gpuLayers;
         this._useMmap = useMmap ?? false;
         this._vocabOnly = vocabOnly ?? false;
+        this._lazyMode = !useMmap
+            ? false
+            : lazyMode == null
+                ? false
+                : (typeof lazyMode === "boolean" || lazyMode === "auto")
+                    ? lazyMode
+                    : false;
         this._backendModelDisposeGuard = new DisposeGuard([this._llama._backendDisposeGuard]);
         this._llamaPreventDisposalHandle = this._llama._backendDisposeGuard.createPreventDisposalHandle();
         this._defaultContextFlashAttentionOptionEnabled = _defaultContextFlashAttentionOptionEnabled;
@@ -295,6 +319,7 @@ export class LlamaModel {
                 ? useMlock
                 : undefined,
             checkTensors: checkTensors ?? false,
+            lazyMode: this._lazyMode,
             onLoadProgress: onLoadProgress == null
                 ? undefined
                 : (loadPercentage: number) => {
@@ -404,6 +429,10 @@ export class LlamaModel {
         return this._useMmap;
     }
 
+    public get lazyMode(): "auto" | boolean {
+        return this._lazyMode;
+    }
+
     /**
      * Total model size in memory in bytes.
      *
@@ -433,6 +462,17 @@ export class LlamaModel {
 
     public get defaultContextKvCacheValueType() {
         return this._defaultContextKvCacheValueType;
+    }
+
+    /** Assumed memory footprint of the model in bytes */
+    public get memoryUsage(): {
+        ram: number,
+        vram: number
+    } {
+        return {
+            ram: this._ramConsumptionMarking?.size ?? 0,
+            vram: this._vramConsumptionMarking?.size ?? 0
+        };
     }
 
     /**
@@ -659,6 +699,16 @@ export class LlamaModel {
             throw new Error("Model is loaded in vocabOnly mode, so no context can be created");
 
         return await LlamaRankingContext._create({_model: this}, options);
+    }
+
+    /**
+     * @see [Using Structured Decisions](https://node-llama-cpp.withcat.ai/guide/structured-decisions) tutorial
+     */
+    public async createDecisionContext(options: LlamaDecisionContextOptions = {}) {
+        if (this._vocabOnly)
+            throw new Error("Model is loaded in vocabOnly mode, so no context can be created");
+
+        return await LlamaDecisionContext._create({_model: this}, options);
     }
 
     /**
