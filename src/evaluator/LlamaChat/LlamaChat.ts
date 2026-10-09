@@ -657,6 +657,41 @@ export class LlamaChat {
         return this.sequence.model;
     }
 
+    /** @internal */
+    public _createResponseSegmentHandler({
+        history,
+        previousTokens,
+        onToken,
+        onTextChunk,
+        onResponseChunk
+    }: {
+        history: ChatHistoryItem[],
+        previousTokens: Token[],
+        onToken?: (tokens: Token[]) => void,
+        onTextChunk?: (text: string) => void,
+        onResponseChunk?: (chunk: LlamaChatResponseChunk) => void
+    }) {
+        const segmentDefinitions: ConstructorParameters<typeof SegmentHandler>[0]["segmentDefinitions"] = new Map();
+        for (const segmentType of allSegmentTypes) {
+            const definition = getStandardizedChatWrapperSegmentDefinition(this.chatWrapper.settings, segmentType);
+            if (definition != null)
+                segmentDefinitions.set(segmentType, definition);
+        }
+
+        const lastModelResponse = getLastModelMessageFullResponseFromChatHistory(history);
+        return new SegmentHandler({
+            model: this.model,
+            onToken: safeEventCallback(onToken),
+            onTextChunk: safeEventCallback(onTextChunk),
+            onResponseChunk: safeEventCallback(onResponseChunk),
+            previousTokens,
+            closeAllSegments: this.chatWrapper.settings.segments?.closeAllSegments,
+            segmentDefinitions,
+            initialSegmentStack: SegmentHandler.getStackFromModelResponse(lastModelResponse),
+            initialTokenCounts: SegmentHandler.getSegmentTokenCounts(lastModelResponse, this.model.tokenizer)
+        });
+    }
+
     public async generateResponse<const Functions extends ChatModelFunctions | undefined = undefined>(
         history: ChatHistoryItem[],
         options: LLamaChatGenerateResponseOptions<Functions> = {}

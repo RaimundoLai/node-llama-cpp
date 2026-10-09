@@ -42,6 +42,23 @@ export type BindingModule = {
     AddonModelLora: {
         new (model: AddonModel, filePath: string): AddonModelLora
     },
+    AddonBitmap: {
+        new (): AddonBitmap,
+        initFromBuffer(buffer: Buffer | Uint8Array): AddonBitmap,
+        initFromFile(filePath: string): AddonBitmap
+    },
+    AddonMultimodal: {
+        new (model: AddonModel, options: {
+            modelPath: string,
+            useGpu?: boolean,
+            printTimings?: boolean,
+            nThreads?: number,
+            warmup?: boolean,
+            imageMinTokens?: number,
+            imageMaxTokens?: number,
+            mediaMarker?: string
+        }): AddonMultimodal
+    },
     AddonContext: {
         new (model: AddonModel, params: AddonContextParams): AddonContext
     },
@@ -288,3 +305,42 @@ type _AddonModelFileTypeName = "all F32" | "mostly F16" | "mostly Q4_0" | "mostl
     "mostly Q5_1" | "mostly Q8_0" | "mostly Q2_K" | "mostly Q3_K - Small" | "mostly Q3_K - Medium" | "mostly Q3_K - Large" |
     "mostly Q4_K - Small" | "mostly Q4_K - Medium" | "mostly Q5_K - Small" | "mostly Q5_K - Medium" | "mostly Q6_K" |
     "unknown, may not work";
+
+export type AddonBitmap = {
+    readonly disposed: boolean,
+    readonly width: number,
+    readonly height: number,
+    readonly bytes: number,
+    id: string | null,
+    setMergeable(mergeable: boolean): void,
+    clone(): AddonBitmap,
+    dispose(): void
+};
+
+export type AddonMultimodal = {
+    readonly disposed: boolean,
+    init(): Promise<void>,
+    dispose(): void,
+    supportVision(): boolean,
+    supportAudio(): boolean,
+    supportVideo(): boolean,
+    getDefaultMarker(): string,
+    createBitmapFromFile(filePath: string, options?: {videoFps?: number}): AddonBitmap,
+    createBitmapFromBuffer(buffer: Buffer | Uint8Array, options?: {videoFps?: number}): AddonBitmap,
+    evalChunks(
+        context: AddonContext,
+        sequenceId: number,
+        firstTokenContextIndex: number,
+        prompt: string,
+        bitmaps: AddonBitmap[],
+        logitsLast: boolean,
+        options?: {
+            addSpecial?: boolean,
+            parseSpecial?: boolean,
+            nBatch?: number
+        }
+    ): Promise<{
+        newPast: number,
+        tokensCount: number
+    }>
+};

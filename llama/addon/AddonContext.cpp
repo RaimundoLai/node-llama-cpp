@@ -810,6 +810,17 @@ Napi::Value AddonContext::DisposeBatch(const Napi::CallbackInfo& info) {
 
     return info.Env().Undefined();
 }
+
+static int32_t addTokenToBatch(llama_batch& batch, llama_token token, llama_pos position, llama_seq_id sequenceId, bool output) {
+    const int32_t index = batch.n_tokens++;
+    batch.token[index] = token;
+    batch.pos[index] = position;
+    batch.n_seq_id[index] = 1;
+    batch.seq_id[index][0] = sequenceId;
+    batch.logits[index] = output ? 1 : 0;
+    return index;
+}
+
 Napi::Value AddonContext::AddToBatch(const Napi::CallbackInfo& info) {
     if (!has_batch) {
         Napi::Error::New(info.Env(), "No batch is initialized").ThrowAsJavaScriptException();
@@ -832,11 +843,22 @@ Napi::Value AddonContext::AddToBatch(const Napi::CallbackInfo& info) {
 
     for (size_t i = 0, l = 0; i < tokensLength; i++) {
         if (l < tokenLogitIndexesLength && tokenLogitIndexes[l] == i) {
-            common_batch_add(batch, static_cast<llama_token>(tokens[i]), firstTokenContextIndex + i, { sequenceId }, true);
-            resLogitIndexes[l] = batch.n_tokens - 1;
+            resLogitIndexes[l] = addTokenToBatch(
+                batch,
+                static_cast<llama_token>(tokens[i]),
+                firstTokenContextIndex + i,
+                sequenceId,
+                true
+            );
             l++;
         } else {
-            common_batch_add(batch, static_cast<llama_token>(tokens[i]), firstTokenContextIndex + i, { sequenceId }, false);
+            addTokenToBatch(
+                batch,
+                static_cast<llama_token>(tokens[i]),
+                firstTokenContextIndex + i,
+                sequenceId,
+                false
+            );
         }
     }
 

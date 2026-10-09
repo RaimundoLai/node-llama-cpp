@@ -27,6 +27,8 @@ import {
     type DecisionAnswer, type DecisionNoulAnswer, type DecisionChoiceAnswer, type DecisionScoreAnswer,
     type DecisionQuestions, type DecisionAnswers
 } from "./evaluator/LlamaDecisionContext/types.js";
+import {LlamaMultimodal, type LlamaMultimodalMediaInputPart, type LlamaMultimodalOptions} from "./evaluator/LlamaMultimodal.js";
+import {LlamaImage} from "./evaluator/LlamaImage.js";
 import {
     type LlamaContextOptions, type SequenceEvaluateOptions, type BatchingOptions, type LlamaContextSequenceRepeatPenalty,
     type CustomBatchingDispatchSchedule, type CustomBatchingPrioritizationStrategy, type BatchItem, type PrioritizedBatchItem,
@@ -206,6 +208,10 @@ export {
     type DecisionScoreAnswer,
     type DecisionQuestions,
     type DecisionAnswers,
+    LlamaMultimodal,
+    type LlamaMultimodalMediaInputPart,
+    type LlamaMultimodalOptions,
+    LlamaImage,
     LlamaChatSession,
     defineChatSessionFunction,
     type LlamaChatSessionOptions,

@@ -22,6 +22,7 @@ import {LlamaRankingContext, LlamaRankingContextOptions} from "../LlamaRankingCo
 import {GgmlType, resolveGgmlTypeOption} from "../../gguf/types/GgufTensorInfoTypes.js";
 import {MemoryMarking} from "../../bindings/utils/MemoryOrchestrator.js";
 import {LlamaDecisionContext, LlamaDecisionContextOptions} from "../LlamaDecisionContext/LlamaDecisionContext.js";
+import {LlamaMultimodal, type LlamaMultimodalOptions} from "../LlamaMultimodal.js";
 import {TokenAttribute, TokenAttributes} from "./utils/TokenAttributes.js";
 import type {Llama} from "../../bindings/Llama.js";
 import type {BuiltinSpecialTokenValue} from "../../utils/LlamaText.js";
@@ -29,6 +30,9 @@ import type {BuiltinSpecialTokenValue} from "../../utils/LlamaText.js";
 export type LlamaModelOptions = {
     /** path to the model on the filesystem */
     modelPath: string,
+
+    /** Path to multimodal projector file (`mmproj-*.gguf`) for vision/audio models */
+    mmprojPath?: string,
 
     /**
      * Number of layers to store in VRAM.
@@ -251,6 +255,8 @@ export class LlamaModel {
     /** @internal */ private _trainContextSize?: number;
     /** @internal */ private _embeddingVectorSize?: number;
     /** @internal */ private _vocabularyType?: LlamaVocabularyType;
+    /** @internal */ private _multimodal?: LlamaMultimodal;
+    /** @internal */ private _loadingMultimodal: boolean = false;
 
     public readonly tokenizer: Tokenizer;
     public readonly onDispose = new EventRelay<void>();
@@ -375,6 +381,8 @@ export class LlamaModel {
 
         this._disposedState.disposed = true;
 
+        await this._multimodal?.[Symbol.asyncDispose]();
+
         await this._disposeAggregator.dispose();
     }
 
@@ -469,9 +477,10 @@ export class LlamaModel {
         ram: number,
         vram: number
     } {
+        const multimodalMemoryUsage = this._multimodal?.memoryUsage;
         return {
-            ram: this._ramConsumptionMarking?.size ?? 0,
-            vram: this._vramConsumptionMarking?.size ?? 0
+            ram: (this._ramConsumptionMarking?.size ?? 0) + (multimodalMemoryUsage?.ram ?? 0),
+            vram: (this._vramConsumptionMarking?.size ?? 0) + (multimodalMemoryUsage?.vram ?? 0)
         };
     }
 
@@ -709,6 +718,47 @@ export class LlamaModel {
             throw new Error("Model is loaded in vocabOnly mode, so no context can be created");
 
         return await LlamaDecisionContext._create({_model: this}, options);
+    }
+
+    /**
+     * Load a multimodal projector (`mmproj`) for vision/audio models.
+     */
+    public async loadMultimodal(options: LlamaMultimodalOptions): Promise<LlamaMultimodal> {
+        this._ensureNotDisposed();
+        if (this._loadingMultimodal)
+            throw new Error("A multimodal projector is already being loaded for this model");
+
+        this._loadingMultimodal = true;
+
+        try {
+            const preventModelDisposalHandle = this._backendModelDisposeGuard.createPreventDisposalHandle();
+            let multimodal: LlamaMultimodal | undefined;
+            try {
+                multimodal = await LlamaMultimodal._create(this, options);
+                if (this._disposedState.disposed)
+                    throw new DisposedError();
+
+                await this._multimodal?.[Symbol.asyncDispose]();
+                if (this._disposedState.disposed)
+                    throw new DisposedError();
+
+                this._multimodal = multimodal;
+                this._disposeAggregator.add(multimodal);
+                return multimodal;
+            } catch (err) {
+                if (multimodal != null && this._multimodal !== multimodal)
+                    await multimodal[Symbol.asyncDispose]();
+                throw err;
+            } finally {
+                preventModelDisposalHandle.dispose();
+            }
+        } finally {
+            this._loadingMultimodal = false;
+        }
+    }
+
+    public get multimodal(): LlamaMultimodal | undefined {
+        return this._multimodal;
     }
 
     /**
@@ -954,9 +1004,11 @@ export class LlamaModel {
             : _llama._ramOrchestrator.reserveMemory(resourceRequirementsEstimation.cpuRam);
         const loggedWarnings = new Set<string>();
 
+        let modelLoaded: boolean = false;
+
         function onAbort() {
-            model._model.abortActiveModelLoad();
-            loadSignal?.removeEventListener("abort", onAbort);
+            if (!modelLoaded)
+                model._model.abortActiveModelLoad();
         }
 
         function logWarnings(warnings: string[]) {
@@ -969,18 +1021,17 @@ export class LlamaModel {
             }
         }
 
-        if (loadSignal != null) {
-            if (loadSignal.aborted)
-                throw loadSignal.reason;
-
-            loadSignal.addEventListener("abort", onAbort);
-        }
-
-        logWarnings(ggufInsights.getWarnings(modelOptions.modelPath));
-
         try {
+            if (loadSignal != null) {
+                if (loadSignal.aborted)
+                    throw loadSignal.reason;
+
+                loadSignal.addEventListener("abort", onAbort);
+            }
+
+            logWarnings(ggufInsights.getWarnings(modelOptions.modelPath));
+
             const initLock = await acquireLock([_llama._memoryLock, LlamaLocks.addonInit]);
-            let modelLoaded: boolean = false;
             try {
                 modelLoaded = await model._model.init();
             } finally {
@@ -988,16 +1039,21 @@ export class LlamaModel {
             }
 
             if (loadSignal?.aborted) {
-                if (modelLoaded)
-                    await model._model.dispose();
-
                 throw loadSignal!.reason;
             } else if (!modelLoaded)
                 throw new Error("Failed to load model");
 
-            loadSignal?.removeEventListener("abort", onAbort);
-
             logWarnings(model.getWarnings());
+
+            if (modelOptions.mmprojPath != null) {
+                await model.loadMultimodal({
+                    mmprojPath: modelOptions.mmprojPath,
+                    useGpu: gpuLayers !== 0
+                });
+            }
+
+            if (loadSignal?.aborted)
+                throw loadSignal.reason;
 
             const memoryBreakdown = model._model.getMemoryBreakdown();
             model._vramConsumptionMarking = _llama._vramOrchestrator.markAllocation(memoryBreakdown.gpuVram);
@@ -1006,6 +1062,14 @@ export class LlamaModel {
             modelCreationRamReservation?.dispose?.();
 
             return model;
+        } catch (err) {
+            try {
+                await model.dispose();
+            } catch (disposeError) {
+                throw new AggregateError([err, disposeError], "Model loading failed and model cleanup also failed");
+            }
+
+            throw err;
         } finally {
             loadSignal?.removeEventListener("abort", onAbort);
             modelCreationVramReservation?.dispose?.();

@@ -12,6 +12,8 @@
 #include "AddonModel.h"
 #include "AddonModelLora.h"
 #include "AddonSampler.h"
+#include "AddonBitmap.h"
+#include "AddonMultimodal.h"
 #include "addonGlobals.h"
 #include "globals/addonLog.h"
 #include "globals/addonProgress.h"
@@ -460,8 +462,11 @@ Napi::Object registerCallback(Napi::Env env, Napi::Object exports) {
     AddonContext::init(exports);
     AddonContextSequenceCheckpoint::init(exports);
     AddonSampler::init(exports);
+    AddonBitmap::init(exports);
+    AddonMultimodal::init(exports);
 
     llama_log_set(addonLlamaCppLogCallback, nullptr);
+    mtmd_helper_log_set(addonLlamaCppLogCallback, nullptr);
 
     exports.AddFinalizer(addonFreeLlamaBackendFromFinalizer, static_cast<int*>(nullptr));
     env.AddCleanupHook(addonFreeLlamaBackend);

@@ -2,6 +2,7 @@ import {GbnfJsonSchema, GbnfJsonSchemaToType} from "./utils/gbnfJson/types.js";
 import {LlamaText, BuiltinSpecialTokenValue, LlamaTextJSON} from "./utils/LlamaText.js";
 import type {GgufFileInfo} from "./gguf/types/GgufFileInfoTypes.js";
 import type {GgufArchitectureType} from "./gguf/types/GgufMetadataTypes.js";
+import type {LlamaImage} from "./evaluator/LlamaImage.js";
 
 export type Token = number & {
     __token: never
@@ -369,7 +370,8 @@ export type ChatSystemMessage = {
 };
 export type ChatUserMessage = {
     type: "user",
-    text: string
+    text: string,
+    images?: Array<string | Uint8Array | Buffer | LlamaImage>
 };
 export type ChatModelResponse = {
     type: "model",

@@ -2,7 +2,7 @@ import path from "path";
 import {acquireLock, AsyncDisposeAggregator, DisposedError, EventRelay, Lock, registerFinalizer, withLock} from "lifecycle-utils";
 import {removeNullFields} from "../../utils/removeNullFields.js";
 import {Token} from "../../types.js";
-import {AddonContext, AddonModelLora, BatchLogitIndex} from "../../bindings/AddonTypes.js";
+import {AddonContext, AddonModelLora, BatchLogitIndex, type AddonBitmap} from "../../bindings/AddonTypes.js";
 import {LlamaGrammarEvaluationState} from "../LlamaGrammarEvaluationState.js";
 import {compareTokens} from "../../utils/compareTokens.js";
 import {DisposalPreventionHandle, DisposeGuard} from "../../utils/DisposeGuard.js";
@@ -28,6 +28,8 @@ import {TokenPredictor} from "./TokenPredictor.js";
 import {padSafeContextSize} from "./utils/padSafeContextSize.js";
 import {LlamaContextSequenceCheckpoints} from "./LlamaContextSequenceCheckpoints.js";
 import type {Llama} from "../../bindings/Llama.js";
+import type {LlamaMultimodal} from "../LlamaMultimodal.js";
+import type {LlamaImage} from "../LlamaImage.js";
 
 const defaultLoraScale = 1;
 const shrinkRetriesMinContextSize = 4096;
@@ -1104,6 +1106,7 @@ export class LlamaContextSequence {
     /** @internal */ private _resetTokenPredictor: boolean = false;
     /** @internal */ private _tokenPredictorOwner: {} = {};
     /** @internal */ public _contextTokens: Token[] = [];
+    /** @internal */ private _contextTokensAreIncomplete: boolean = false;
     /** @internal */ private _nextTokenIndex: number = 0;
     /** @internal */ private _loadedTokenPredictions: Array<[
         input: Token,
@@ -1167,6 +1170,7 @@ export class LlamaContextSequence {
         await this._disposeAggregator.dispose();
 
         this._contextTokens.length = 0;
+        this._contextTokensAreIncomplete = false;
 
         this._disposed = true;
     }
@@ -1208,6 +1212,9 @@ export class LlamaContextSequence {
 
     /** The current context state tokens */
     public get contextTokens() {
+        if (this._contextTokensAreIncomplete)
+            throw new UnsupportedError("Context tokens cannot be represented after multimodal input");
+
         if (this._loadedTokenPredictions.length === 0)
             return this._contextTokens.slice();
 
@@ -1287,6 +1294,9 @@ export class LlamaContextSequence {
     public compareContextTokens(tokens: Token[]): {
         firstDifferentIndex: number
     } {
+        if (this._contextTokensAreIncomplete)
+            return {firstDifferentIndex: 0};
+
         for (let i = 0; i < this._contextTokens.length - this._loadedTokenPredictions.length; i++) {
             if (compareTokens(this._contextTokens[i], tokens[i]))
                 continue;
@@ -1312,6 +1322,11 @@ export class LlamaContextSequence {
      * which incurs token evaluation of the shifted tokens.
      */
     public async adaptStateToTokens(tokens: Token[], allowShift: boolean = true) {
+        if (this._contextTokensAreIncomplete) {
+            await this._eraseContextTokenRanges([{start: 0, end: this._nextTokenIndex}], {avoidEvaluation: true});
+            return;
+        }
+
         const modelSupportsShifting = !this.model.fileInsights.isRecurrent &&
             this.model.fileInfo.metadata?.general?.architecture !== GgufArchitectureType.deepseek2;
 
@@ -1405,6 +1420,23 @@ export class LlamaContextSequence {
 
             if (ranges.length === 0)
                 return;
+
+            if (this._contextTokensAreIncomplete) {
+                const clearsEntireSequence = this._nextTokenIndex === 0 || ranges.some(({start, end}) => (
+                    Math.min(start, end) <= 0 && Math.max(start, end) >= this._nextTokenIndex
+                ));
+                if (!clearsEntireSequence)
+                    throw new UnsupportedError("Cannot erase part of a context sequence after multimodal input");
+
+                await this._abortTokenPredictor(true);
+                this._context._ctx.disposeSequence(this._sequenceId);
+                this._contextTokens = [];
+                this._loadedTokenPredictions = [];
+                this._nextTokenIndex = 0;
+                this._contextTokensAreIncomplete = false;
+                this._checkpoints.clearAllCheckpoints();
+                return;
+            }
 
             // if the deletion fails, we'll have to dispose the sequence and fill it up again
             let deletionSuccessful = true;
@@ -1596,7 +1628,7 @@ export class LlamaContextSequence {
             _noSampling = false
         } = options;
 
-        if (this._tokenPredictor != null && !_noSampling && tokens.length > 0)
+        if (this._tokenPredictor != null && !this._contextTokensAreIncomplete && !_noSampling && tokens.length > 0)
             return this._speculativeEvaluate(tokens, metadata, {
                 temperature,
                 minP,
@@ -1678,7 +1710,7 @@ export class LlamaContextSequence {
             },
             _skipLock
         });
-        const predictorAlignmentPromise = this.tokenPredictor == null
+        const predictorAlignmentPromise = this.tokenPredictor == null || this._contextTokensAreIncomplete
             ? undefined
             : this._tokenPredictor?.reset({
                 stateTokens: [...this._contextTokens, ...tokens],
@@ -1960,6 +1992,7 @@ export class LlamaContextSequence {
             this._loadedTokenPredictions.length = 0;
             this._nextTokenIndex = 0;
             this._contextTokens = [];
+            this._contextTokensAreIncomplete = false;
 
             const tokens = Array.from(
                 await this._context._ctx.loadSequenceStateFromFile(resolvedPath, this._sequenceId, this.contextSize)
@@ -2023,9 +2056,13 @@ export class LlamaContextSequence {
         if (this === otherSequence)
             return true;
 
+        if (otherSequence._contextTokensAreIncomplete)
+            throw new UnsupportedError("Cannot copy a context sequence after multimodal input");
+
         using lock = await acquireLock([this._context, "context"]);
 
         this._contextTokens = otherSequence._contextTokens.slice(0);
+        this._contextTokensAreIncomplete = false;
         this._nextTokenIndex = this._contextTokens.length;
         this._loadedTokenPredictions = [];
         this._checkpoints.cloneCheckpointsStateFrom(otherSequence._checkpoints);
@@ -2054,6 +2091,9 @@ export class LlamaContextSequence {
      * See {@link takeCheckpoint `.takeCheckpoint()`} for more details.
      */
     public get needsCheckpoints() {
+        if (this._contextTokensAreIncomplete)
+            return false;
+
         if (this.model.fileInsights.isHybrid || this.model.fileInsights.isRecurrent)
             return true;
         else if (this.model.fileInsights.swaSize != null && !this._context._swaFullCache)
@@ -2743,8 +2783,190 @@ export class LlamaContextSequence {
     }
 
     /** @internal */
+    public async _evaluateMultimodalPrompt({
+        multimodal,
+        prompt,
+        images = [],
+        bitmaps,
+        logitsLast = true,
+        nBatch,
+        addSpecial,
+        parseSpecial,
+        clearSequence = false,
+        sampler,
+        samplerOptions,
+        signal
+    }: {
+        multimodal: LlamaMultimodal,
+        prompt: string,
+        images?: LlamaImage[],
+        bitmaps?: AddonBitmap[],
+        logitsLast?: boolean,
+        nBatch?: number,
+        addSpecial?: boolean,
+        parseSpecial?: boolean,
+        clearSequence?: boolean,
+        sampler?: LlamaSampler,
+        samplerOptions?: SequenceEvaluateOptions,
+        signal?: AbortSignal
+    }): Promise<{
+        tokensCount: number,
+        sampledToken?: Token
+    }> {
+        this._ensureNotDisposed();
+
+        // The multimodal API holds a disposal-prevention handle for the full operation.
+        // Capture these native references before waiting for locks, since dispose() marks
+        // their wrappers disposed immediately while waiting for active handles to drain.
+        const imagePreventDisposalHandles: Array<ReturnType<LlamaImage["_createPreventDisposalHandle"]>> = [];
+        try {
+            for (const image of images)
+                imagePreventDisposalHandles.push(image._createPreventDisposalHandle());
+
+            const addonMultimodal = multimodal._addonMultimodal;
+            const rawBitmaps = bitmaps ?? images.map((img) => img._addonBitmap);
+
+            using evaluatorLock = await acquireLock([this._lock, "evaluate"]);
+            return await withLock([this._context, "context"], async () => {
+                this._ensureNotDisposed();
+
+                if (signal?.aborted)
+                    return {tokensCount: 0};
+
+                const contextPreventDisposalHandle = this._context._backendContextDisposeGuard.createPreventDisposalHandle();
+
+                try {
+                    if (clearSequence) {
+                        await this._abortTokenPredictor(true);
+                        this._context._ctx.disposeSequence(this._sequenceId);
+                        this._contextTokens = [];
+                        this._loadedTokenPredictions = [];
+                        this._nextTokenIndex = 0;
+                        this._contextTokensAreIncomplete = false;
+                        this._checkpoints.clearAllCheckpoints();
+                    } else if (this._loadedTokenPredictions.length > 0) {
+                        const deleteStartIndex = Math.max(0, this._nextTokenIndex - this._loadedTokenPredictions.length);
+                        await this._eraseContextTokenRanges([{start: deleteStartIndex, end: this._nextTokenIndex}], {skipLock: true});
+                    }
+
+                    if (signal?.aborted)
+                        return {tokensCount: 0};
+
+                    const firstTokenContextIndex = this._nextTokenIndex;
+                    let res: {newPast: number, tokensCount: number};
+                    try {
+                        res = await addonMultimodal.evalChunks(
+                            this._context._ctx,
+                            this._sequenceId,
+                            this._nextTokenIndex,
+                            prompt,
+                            rawBitmaps,
+                            logitsLast,
+                            removeNullFields({
+                                nBatch: nBatch ?? this._context.batchSize,
+                                addSpecial,
+                                parseSpecial
+                            })
+                        );
+                    } catch (err) {
+                        this._context._ctx.disposeSequence(this._sequenceId);
+                        this._contextTokens = [];
+                        this._loadedTokenPredictions = [];
+                        this._nextTokenIndex = 0;
+                        this._contextTokensAreIncomplete = false;
+                        this._checkpoints.clearAllCheckpoints();
+                        throw err;
+                    }
+
+                    this._nextTokenIndex = res.newPast;
+                    const numberOfOutputTokens = logitsLast && res.tokensCount > 0 ? 1 : 0;
+                    TokenMeter.useTokens(
+                        this._tokenMeter,
+                        res.tokensCount - numberOfOutputTokens,
+                        "input"
+                    );
+                    TokenMeter.useTokens(this._tokenMeter, numberOfOutputTokens, "output");
+                    if (res.newPast > firstTokenContextIndex) {
+                        this._contextTokens = [];
+                        this._contextTokensAreIncomplete = true;
+                        this._checkpoints.clearAllCheckpoints();
+                    }
+
+                    // Multimodal evaluation runs in a native worker and cannot be interrupted once started.
+                    // Honor cancellation as soon as that worker returns, before sampling another token.
+                    if (signal?.aborted)
+                        return {tokensCount: res.tokensCount};
+
+                    let sampledToken: Token | undefined;
+                    if (sampler != null && logitsLast && this._nextTokenIndex < this._context.contextSize) {
+                        if (sampler.disposed)
+                            throw new Error("Cannot sample with a disposed sampler");
+
+                        sampler.applyConfig(this._resolveSamplerConfig(samplerOptions ?? {}));
+                        const sampled = await this._context._ctx.sampleToken(-1 as BatchLogitIndex, sampler._sampler);
+                        const token = Array.isArray(sampled) ? sampled[0] : sampled;
+                        if (token === -1)
+                            throw new Error("Failed to sample next token");
+                        sampledToken = token as Token;
+                    }
+
+                    return {
+                        tokensCount: res.tokensCount,
+                        sampledToken
+                    };
+                } finally {
+                    contextPreventDisposalHandle.dispose();
+                }
+            });
+        } finally {
+            for (const handle of imagePreventDisposalHandles.reverse())
+                handle.dispose();
+        }
+    }
+
+    /** @internal */
+    public async _evaluateTokenAndSample(token: Token, sampler: LlamaSampler, options: SequenceEvaluateOptions = {}) {
+        this._ensureNotDisposed();
+
+        const {
+            evaluationPriority = defaultEvaluationPriority,
+            contextShift: {
+                size: contextShiftSize = this._contextShift.size,
+                strategy: contextShiftStrategy = this._contextShift.strategy
+            } = {}
+        } = options;
+
+        using evaluatorLock = await acquireLock([this._lock, "evaluate"]);
+        const [sampledToken] = await this._decodeTokens(
+            [token],
+            [true],
+            evaluationPriority,
+            this._tokenMeter,
+            {size: contextShiftSize, strategy: contextShiftStrategy},
+            async (batchLogitIndex) => {
+                if (sampler.disposed)
+                    return undefined;
+
+                sampler.applyConfig(this._resolveSamplerConfig(options));
+                const sampled = await this._context._ctx.sampleToken(batchLogitIndex, sampler._sampler);
+                const nextToken = Array.isArray(sampled) ? sampled[0] : sampled;
+                return nextToken === -1 ? undefined : nextToken as Token;
+            },
+            this.needsCheckpoints ? this._takeIntervalCheckpointIfNeededAfterBatch : undefined
+        );
+
+        if (sampledToken == null)
+            throw new Error("Failed to sample next token");
+
+        return sampledToken;
+    }
+
+    /** @internal */
     private async _freeUpSpaceForTokens(contextShiftOptions: Required<ContextShiftOptions>) {
         this._ensureNotDisposed();
+
+        if (this._contextTokensAreIncomplete)
+            throw new UnsupportedError("Context shifting is not supported after multimodal input");
 
         const size = Math.min(
             this._nextTokenIndex,

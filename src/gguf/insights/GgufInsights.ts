@@ -101,7 +101,8 @@ export class GgufInsights {
 
     /** The size of an embedding vector the model can produce */
     public get embeddingVectorSize() {
-        return this._ggufFileInfo.architectureMetadata.embedding_length;
+        return this._ggufFileInfo.architectureMetadata.embedding_length_out ??
+            this._ggufFileInfo.architectureMetadata.embedding_length;
     }
 
     public get totalLayers() {
@@ -1840,6 +1841,7 @@ function getSwaPatternForArchitecture(architecture?: GgufArchitectureType): [pat
         case GgufArchitectureType.gemma3n:
             return [5, false];
         case GgufArchitectureType.gemmaEmbedding:
+        case GgufArchitectureType.gemmaEmbedding2:
             return [6, false];
         case GgufArchitectureType.cohere2:
             return [4, false];

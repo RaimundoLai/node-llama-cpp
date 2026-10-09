@@ -338,14 +338,18 @@ AddonModel::AddonModel(const Napi::CallbackInfo& info) :
             model_params.vocab_only = options.Get("vocabOnly").As<Napi::Boolean>().Value();
         }
 
-        if (options.Has("useMlock") && options.Get("useMlock").As<Napi::Boolean>().Value()) {
-            model_params.load_mode = LLAMA_LOAD_MODE_MLOCK;
-        } else if (options.Has("useDirectIo") && options.Get("useDirectIo").As<Napi::Boolean>().Value()) {
-            model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
-        } else if (options.Has("useMmap") && options.Get("useMmap").As<Napi::Boolean>().Value()) {
-            model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
-        } else {
-            model_params.load_mode = LLAMA_LOAD_MODE_NONE;
+        if (options.Has("useMlock") || options.Has("useDirectIo") || options.Has("useMmap")) {
+            const bool useMmap = !options.Has("useMmap") || options.Get("useMmap").As<Napi::Boolean>().Value();
+            const bool useDirectIo = options.Has("useDirectIo") && options.Get("useDirectIo").As<Napi::Boolean>().Value();
+            const bool useMlock = options.Has("useMlock") && options.Get("useMlock").As<Napi::Boolean>().Value();
+
+            if (useDirectIo) {
+                model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
+            } else if (useMlock) {
+                model_params.load_mode = useMmap ? LLAMA_LOAD_MODE_MMAP_MLOCK : LLAMA_LOAD_MODE_MLOCK;
+            } else {
+                model_params.load_mode = useMmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+            }
         }
 
         if (options.Has("checkTensors")) {

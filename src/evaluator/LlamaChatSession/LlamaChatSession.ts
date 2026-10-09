@@ -2,7 +2,7 @@ import {DisposeAggregator, DisposedError, EventRelay, withLock} from "lifecycle-
 import {ChatWrapper} from "../../ChatWrapper.js";
 import {
     ChatHistoryItem, ChatModelFunctionCall, ChatModelFunctions, ChatModelResponse, ChatSessionModelFunction, ChatSessionModelFunctions,
-    Token
+    Token, Tokenizer
 } from "../../types.js";
 import {appendUserMessageToChatHistory} from "../../utils/appendUserMessageToChatHistory.js";
 import {LlamaContextSequence} from "../LlamaContext/LlamaContext.js";
@@ -11,13 +11,20 @@ import {
     LlamaChat, LLamaChatContextShiftOptions, LlamaChatResponse, LlamaChatResponseChunk, LlamaChatResponseFunctionCall,
     LlamaChatResponseFunctionCallParamsChunk
 } from "../LlamaChat/LlamaChat.js";
-import {EvaluationPriority} from "../LlamaContext/types.js";
+import {EvaluationPriority, SequenceEvaluateOptions} from "../LlamaContext/types.js";
 import {TokenBias} from "../TokenBias.js";
 import {LlamaText, LlamaTextJSON} from "../../utils/LlamaText.js";
 import {wrapAbortSignal} from "../../utils/wrapAbortSignal.js";
 import {safeEventCallback} from "../../utils/safeEventCallback.js";
+import {TokenStreamRegulator} from "../../utils/TokenStreamRegulator.js";
+import {getQueuedTokensBeforeStopTrigger} from "../../utils/getQueuedTokensBeforeStopTrigger.js";
+import {UnsupportedError} from "../../utils/UnsupportedError.js";
 import {GgufArchitectureType} from "../../gguf/types/GgufMetadataTypes.js";
 import {DecisionAnswers, DecisionQuestions} from "../LlamaDecisionContext/types.js";
+import {LlamaSampler} from "../LlamaContext/LlamaSampler.js";
+import {LlamaGrammarEvaluationState} from "../LlamaGrammarEvaluationState.js";
+import {StopGenerationDetector} from "../../utils/StopGenerationDetector.js";
+import {LlamaImage} from "../LlamaImage.js";
 import {
     LLamaChatPromptCompletionEngineOptions, LlamaChatSessionPromptCompletionEngine
 } from "./utils/LlamaChatSessionPromptCompletionEngine.js";
@@ -280,7 +287,13 @@ export type LLamaChatPromptOptions<Functions extends ChatSessionModelFunctions |
          * When the context size is smaller than `8192`, defaults to 50% of the context size.
          */
         commentTokens?: number
-    }
+    },
+
+    /**
+     * Images to include with the prompt for multimodal / vision models.
+     * Can be file paths, Buffers, Uint8Arrays, or LlamaImage instances.
+     */
+    images?: Array<string | Uint8Array | Buffer | LlamaImage>
 } & ({
     grammar?: LlamaGrammar,
     functions?: never,
@@ -612,6 +625,7 @@ export class LlamaChatSession {
         if (this._chat == null)
             return;
 
+        disposeChatHistoryImages(this._chatHistory);
         this._chat.dispose({disposeSequence});
         this._chat = null;
 
@@ -725,7 +739,8 @@ export class LlamaChatSession {
         dryRepeatPenalty,
         tokenBias,
         customStopTriggers,
-        evaluationPriority
+        evaluationPriority,
+        images
     }: LLamaChatPromptOptions<Functions> = {}) {
         this._ensureNotDisposed();
 
@@ -779,6 +794,278 @@ export class LlamaChatSession {
                     text: resolvedResponsePrefix,
                     tokens: this.model.tokenize(resolvedResponsePrefix)
                 });
+            }
+
+            if ((images?.length ?? 0) > 0 || this._chatHistory.some((item) =>
+                item.type === "user" && (item.images?.length ?? 0) > 0
+            )) {
+                let sampler: LlamaSampler | undefined;
+                const storedImages: Array<string | Uint8Array | Buffer | LlamaImage> = [];
+                const ownedStoredImages: LlamaImage[] = [];
+                let multimodalEvaluationStarted = false;
+                let committed = false;
+
+                try {
+                    const multimodal = this.model.multimodal;
+                    if (multimodal == null)
+                        throw new Error("Cannot process images: no multimodal projector loaded on this model. Call 'model.loadMultimodal({ mmprojPath })' before passing images.");
+
+                    if (functions != null && Object.keys(functions).length > 0)
+                        throw new UnsupportedError("Function calling is not supported for multimodal chat prompts");
+                    if (onFunctionCallParamsChunk != null)
+                        throw new UnsupportedError("Function call streaming is not supported for multimodal chat prompts");
+                    if (budgets != null)
+                        throw new UnsupportedError("Response segment budgets are not supported for multimodal chat prompts");
+
+                    for (const image of images ?? []) {
+                        const storedImage = cloneChatImageInput(image);
+                        storedImages.push(storedImage);
+                        if (storedImage instanceof LlamaImage)
+                            ownedStoredImages.push(storedImage);
+                    }
+
+                    const defaultMarker = multimodal.defaultMarker;
+                    let resolvedPrompt = prompt;
+                    const markerCount = resolvedPrompt.split(defaultMarker).length - 1;
+                    if (markerCount === 0 && storedImages.length > 0)
+                        resolvedPrompt = (defaultMarker + "\n").repeat(storedImages.length) + resolvedPrompt;
+                    else if (storedImages.length > 0 && markerCount !== storedImages.length)
+                        throw new Error(
+                            `The prompt contains ${markerCount} media markers, but ${storedImages.length} images were provided`
+                        );
+
+                    const multimodalChatHistory = appendUserMessageToChatHistory(
+                        this._chatHistory,
+                        resolvedPrompt,
+                        storedImages.length > 0 ? storedImages : undefined
+                    );
+                    multimodalChatHistory.push({
+                        type: "model",
+                        response: resolvedResponsePrefix != null
+                            ? [resolvedResponsePrefix]
+                            : []
+                    });
+
+                    const contextSize = this.sequence.context.contextSize;
+                    const contextShiftSize = this._contextShift?.size == null
+                        ? Math.ceil(contextSize * 0.1)
+                        : typeof this._contextShift.size === "function"
+                            ? await this._contextShift.size(this.sequence)
+                            : this._contextShift.size;
+                    compressMultimodalChatHistoryToFitContextSize({
+                        history: multimodalChatHistory,
+                        contextSize,
+                        contextShiftSize,
+                        tokenizer: this.model.tokenizer,
+                        chatWrapper: this.chatWrapper
+                    });
+
+                    const allImages = multimodalChatHistory.flatMap((item) =>
+                        (item.type === "user" ? item.images ?? [] : [])
+                    );
+                    const {contextText, stopGenerationTriggers} = this.chatWrapper.generateContextState({
+                        chatHistory: multimodalChatHistory
+                    });
+
+                    const resolvedRepeatPenalty = repeatPenalty === false ? undefined : repeatPenalty;
+                    sampler = new LlamaSampler(this.model);
+
+                    const generatedTokens: Token[] = [];
+                    const segmentHandler = this._chat._createResponseSegmentHandler({
+                        history: multimodalChatHistory,
+                        previousTokens: this.model.tokenize(contextText.toString()),
+                        onToken,
+                        onTextChunk,
+                        onResponseChunk
+                    });
+                    const emitTokens = (tokens: Token[]) => {
+                        if (tokens.length === 0)
+                            return;
+
+                        segmentHandler.processTokens(tokens);
+                    };
+
+                    const stopDetector = new StopGenerationDetector();
+                    const customStopDetector = new StopGenerationDetector();
+                    const triggers: (string | readonly (string | Token)[] | LlamaText)[] = [
+                        ...(stopGenerationTriggers ?? []),
+                        ...(grammar?.stopGenerationTriggers ?? [])
+                    ];
+                    StopGenerationDetector.resolveStopTriggers(triggers, this.model.tokenizer)
+                        .forEach((trigger) => stopDetector.addStopTrigger(trigger));
+                    StopGenerationDetector.resolveStopTriggers(customStopTriggers ?? [], this.model.tokenizer)
+                        .forEach((trigger) => customStopDetector.addStopTrigger(trigger));
+
+                    const streamRegulator = new TokenStreamRegulator();
+                    const grammarEvaluationState = grammar == null
+                        ? undefined
+                        : new LlamaGrammarEvaluationState({model: this.model, grammar});
+                    const repeatPenaltyLastTokens = resolvedRepeatPenalty?.lastTokens ?? 64;
+                    const contextRepeatPenaltyTokens = this.model.tokenize(contextText.toString());
+
+                    const getRepeatPenaltyOptions = () => {
+                        if (resolvedRepeatPenalty == null)
+                            return undefined;
+
+                        const punishmentTokens = repeatPenaltyLastTokens <= 0
+                            ? []
+                            : [...contextRepeatPenaltyTokens, ...generatedTokens].slice(-repeatPenaltyLastTokens);
+                        const nlToken = this.model.tokens.nl;
+                        const filteredPunishmentTokens = resolvedRepeatPenalty.punishTokensFilter?.(punishmentTokens) ?? punishmentTokens;
+
+                        return {
+                            punishTokens: resolvedRepeatPenalty.penalizeNewLine === true || nlToken == null
+                                ? filteredPunishmentTokens
+                                : filteredPunishmentTokens.filter((token) => token !== nlToken),
+                            maxPunishTokens: Math.max(repeatPenaltyLastTokens, filteredPunishmentTokens.length),
+                            penalty: resolvedRepeatPenalty.penalty,
+                            frequencyPenalty: resolvedRepeatPenalty.frequencyPenalty,
+                            presencePenalty: resolvedRepeatPenalty.presencePenalty
+                        };
+                    };
+
+                    const getSamplerOptions = (): SequenceEvaluateOptions => ({
+                        temperature,
+                        minP,
+                        topK,
+                        topP,
+                        seed,
+                        xtc,
+                        grammarEvaluationState,
+                        repeatPenalty: getRepeatPenaltyOptions(),
+                        dryRepeatPenalty,
+                        tokenBias,
+                        evaluationPriority
+                    });
+
+                    let sampledToken: Token | undefined;
+                    if (abortController.signal.aborted) {
+                        if (!stopOnAbortSignal)
+                            throw abortController.signal.reason;
+                    } else {
+                        multimodalEvaluationStarted = true;
+                        ({sampledToken} = await multimodal._evaluatePromptWithImagesAndSample({
+                            contextSequence: this.sequence,
+                            prompt: contextText.toString(),
+                            images: allImages,
+                            logitsLast: true,
+                            clearSequence: true,
+                            sampler: (maxTokens ?? 4096) > 0 ? sampler : undefined,
+                            samplerOptions: getSamplerOptions(),
+                            signal: abortController.signal
+                        }));
+                    }
+                    if (abortController.signal.aborted && !stopOnAbortSignal)
+                        throw abortController.signal.reason;
+
+                    const maxGenerationTokens = Math.max(0, Math.min(
+                        maxTokens ?? 4096,
+                        this.sequence.context.contextSize - this.sequence.nextTokenIndex
+                    ));
+                    let stopReason: "eogToken" | "stopGenerationTrigger" | "customStopTrigger" | "maxTokens" | "abort" =
+                        abortController.signal.aborted ? "abort" : "maxTokens";
+                    let customStopTrigger: (string | Token)[] | undefined;
+                    let remainingGenerationAfterStop: string | Token[] | undefined;
+                    let token = sampledToken;
+
+                    for (let i = 0; i < maxGenerationTokens; i++) {
+                        if (abortController.signal.aborted) {
+                            if (!stopOnAbortSignal)
+                                throw abortController.signal.reason;
+                            stopReason = "abort";
+                            break;
+                        }
+
+                        if (token == null) {
+                            stopReason = "maxTokens";
+                            break;
+                        }
+
+                        if (this.model.isEogToken(token)) {
+                            stopReason = "eogToken";
+                            stopDetector.clearInProgressStops();
+                            customStopDetector.clearInProgressStops();
+                            emitTokens(streamRegulator.popFreeChunkTokens());
+                            break;
+                        }
+
+                        generatedTokens.push(token);
+                        const tokenText = this.model.detokenize([token], false, generatedTokens.slice(0, -1));
+                        const queuedTokenRelease = streamRegulator.addChunk({tokens: [token], text: tokenText});
+                        stopDetector.recordGeneration({text: tokenText, tokens: [token], queuedTokenRelease});
+                        customStopDetector.recordGeneration({text: tokenText, tokens: [token], queuedTokenRelease});
+                        emitTokens(streamRegulator.popFreeChunkTokens());
+
+                        if (stopDetector.hasTriggeredStops || customStopDetector.hasTriggeredStops) {
+                            const isCustomStop = !stopDetector.hasTriggeredStops && customStopDetector.hasTriggeredStops;
+                            const triggeredStops = stopDetector.hasTriggeredStops
+                                ? stopDetector.getTriggeredStops()
+                                : customStopDetector.getTriggeredStops();
+                            const partiallyFreeTokens = streamRegulator.getPartiallyFreeChunk(this.model.tokenizer);
+                            emitTokens(getQueuedTokensBeforeStopTrigger(
+                                triggeredStops,
+                                partiallyFreeTokens,
+                                this.model.tokenizer
+                            ));
+                            const stopResult = StopGenerationDetector.getFirstRemainingGenerationAfterStop(triggeredStops);
+                            stopReason = isCustomStop ? "customStopTrigger" : "stopGenerationTrigger";
+                            remainingGenerationAfterStop = stopResult.firstRemainingGenerationAfterStop;
+                            if (isCustomStop)
+                                customStopTrigger = stopResult.stopTrigger;
+                            break;
+                        }
+
+                        if (i + 1 < maxGenerationTokens)
+                            token = await this.sequence._evaluateTokenAndSample(token, sampler, getSamplerOptions());
+                    }
+
+                    if (abortController.signal.aborted) {
+                        if (!stopOnAbortSignal)
+                            throw abortController.signal.reason;
+                        stopReason = "abort";
+                    }
+
+                    stopDetector.clearInProgressStops();
+                    customStopDetector.clearInProgressStops();
+                    emitTokens(streamRegulator.popFreeChunkTokens());
+                    segmentHandler.onFinishedGeneration();
+
+                    const generatedResponse = segmentHandler.getModelResponseSegments(
+                        grammar?.trimWhitespaceSuffix || trimWhitespaceSuffix
+                    );
+                    const response = resolvedResponsePrefix != null
+                        ? [resolvedResponsePrefix, ...generatedResponse]
+                        : generatedResponse;
+                    const responseText = response
+                        .filter((item): item is string => typeof item === "string")
+                        .join("");
+
+                    multimodalChatHistory[multimodalChatHistory.length - 1] = {
+                        type: "model",
+                        response
+                    };
+                    const previousChatHistory = this._chatHistory;
+                    this._chatHistory = multimodalChatHistory;
+                    disposeChatHistoryImagesRemovedFrom(previousChatHistory, multimodalChatHistory);
+                    this._lastEvaluation = undefined;
+                    this._canUseContextWindowForCompletion = false;
+                    committed = true;
+
+                    if (stopReason === "customStopTrigger")
+                        return {response, responseText, stopReason, customStopTrigger, remainingGenerationAfterStop};
+                    return {response, responseText, stopReason, remainingGenerationAfterStop};
+                } finally {
+                    sampler?.dispose();
+                    disposeAbortController();
+                    if (!committed) {
+                        if (multimodalEvaluationStarted) {
+                            await this.sequence.adaptStateToTokens([]);
+                            this._lastEvaluation = undefined;
+                            this._canUseContextWindowForCompletion = false;
+                        }
+                        ownedStoredImages.forEach((image) => image.dispose());
+                    }
+                }
             }
 
             try {
@@ -1346,7 +1633,7 @@ export class LlamaChatSession {
     }
 
     public getChatHistory() {
-        return structuredClone(this._chatHistory);
+        return cloneChatHistory(this._chatHistory);
     }
 
     public getLastEvaluationContextWindow() {
@@ -1357,7 +1644,9 @@ export class LlamaChatSession {
     }
 
     public setChatHistory(chatHistory: ChatHistoryItem[]) {
-        this._chatHistory = structuredClone(chatHistory);
+        const clonedChatHistory = cloneChatHistory(chatHistory);
+        disposeChatHistoryImages(this._chatHistory);
+        this._chatHistory = clonedChatHistory;
         this._chatHistoryStateRef = {};
         this._lastEvaluation = undefined;
         this._canUseContextWindowForCompletion = false;
@@ -1459,4 +1748,137 @@ function asWithLastUserMessageRemoved(chatHistory?: ChatHistoryItem[]) {
         newChatHistory.pop();
 
     return newChatHistory;
+}
+
+function cloneChatImageInput(image: string | Uint8Array | Buffer | LlamaImage) {
+    if (image instanceof LlamaImage)
+        return image.clone();
+    if (Buffer.isBuffer(image))
+        return Buffer.from(image);
+    if (image instanceof Uint8Array)
+        return new Uint8Array(image);
+
+    return image;
+}
+
+function cloneChatHistory(chatHistory: readonly ChatHistoryItem[]): ChatHistoryItem[] {
+    return chatHistory.map((item) => {
+        if (item.type !== "user" || item.images == null)
+            return structuredClone(item);
+
+        return {
+            ...structuredClone({...item, images: undefined}),
+            images: item.images.map(cloneChatImageInput)
+        };
+    });
+}
+
+function disposeChatHistoryImages(chatHistory: readonly ChatHistoryItem[]) {
+    for (const item of chatHistory) {
+        if (item.type !== "user")
+            continue;
+
+        for (const image of item.images ?? []) {
+            if (image instanceof LlamaImage)
+                image.dispose();
+        }
+    }
+}
+
+function disposeChatHistoryImagesRemovedFrom(previousHistory: readonly ChatHistoryItem[], nextHistory: readonly ChatHistoryItem[]) {
+    const retainedImages = new Set<LlamaImage>();
+    for (const item of nextHistory) {
+        if (item.type !== "user")
+            continue;
+
+        for (const image of item.images ?? []) {
+            if (image instanceof LlamaImage)
+                retainedImages.add(image);
+        }
+    }
+
+    for (const item of previousHistory) {
+        if (item.type !== "user")
+            continue;
+
+        for (const image of item.images ?? []) {
+            if (image instanceof LlamaImage && !retainedImages.has(image))
+                image.dispose();
+        }
+    }
+}
+
+function compressMultimodalChatHistoryToFitContextSize({
+    history,
+    contextSize,
+    contextShiftSize,
+    tokenizer,
+    chatWrapper
+}: {
+    history: ChatHistoryItem[],
+    contextSize: number,
+    contextShiftSize: number,
+    tokenizer: Tokenizer,
+    chatWrapper: ChatWrapper
+}) {
+    if (!Number.isFinite(contextShiftSize))
+        throw new RangeError("The context shift size must be a finite number");
+
+    const contextShiftTokenReserve = Math.max(1, Math.min(contextSize - 1, Math.ceil(contextShiftSize)));
+    const estimatedTokensPerImage = Math.max(1, Math.ceil(contextSize * 0.25));
+
+    const getEstimatedTotalTokens = () => {
+        const {contextText} = chatWrapper.generateContextState({chatHistory: history});
+        const textTokensCount = contextText.tokenize(tokenizer).length;
+        const imagesCount = history.reduce((count, item) =>
+            count + (item.type === "user" ? item.images?.length ?? 0 : 0), 0
+        );
+
+        // Text tokenization does not include the vision tokens produced from image inputs.
+        return textTokensCount + imagesCount * estimatedTokensPerImage + contextShiftTokenReserve;
+    };
+
+    while (getEstimatedTotalTokens() > contextSize) {
+        if (!removeOldestMultimodalChatTurn(history))
+            throw new Error(
+                "The multimodal chat prompt cannot fit into the context window after removing previous chat turns. " +
+                "Reduce the current prompt or image count, or use a larger context."
+            );
+    }
+}
+
+function removeOldestMultimodalChatTurn(history: ChatHistoryItem[]) {
+    const pendingResponseIndex = history.length - 1;
+    let currentUserIndex = -1;
+    for (let i = pendingResponseIndex - 1; i >= 0; i--) {
+        if (history[i]?.type === "user") {
+            currentUserIndex = i;
+            break;
+        }
+    }
+
+    if (currentUserIndex < 0)
+        return false;
+
+    for (let userIndex = 0; userIndex < currentUserIndex; userIndex++) {
+        if (history[userIndex]?.type !== "user")
+            continue;
+
+        let modelResponseIndex = -1;
+        for (let i = userIndex + 1; i < currentUserIndex; i++) {
+            if (history[i]?.type === "model") {
+                modelResponseIndex = i;
+                break;
+            }
+        }
+
+        if (modelResponseIndex < 0)
+            continue;
+
+        history.splice(modelResponseIndex, 1);
+        history.splice(userIndex, 1);
+        return true;
+    }
+
+    return false;
 }

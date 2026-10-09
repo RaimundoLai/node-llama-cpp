@@ -138,6 +138,33 @@ const embedding = await context.getEmbeddingFor(text);
 console.log("Embedding vector:", embedding.vector);
 ```
 
+## Embedding Images, Audio, and Video
+Models with a multimodal projector can embed ordered text and media parts with one embedding context. For example, EmbeddingGemma 2 uses a text GGUF together with its `mmproj` GGUF:
+
+```typescript
+import path from "path";
+import {getLlama} from "node-llama-cpp";
+
+const llama = await getLlama();
+const model = await llama.loadModel({
+    modelPath: path.join(__dirname, "embeddinggemma-2-Q8_0.gguf")
+});
+await model.loadMultimodal({
+    mmprojPath: path.join(__dirname, "mmproj-Q8_0.gguf")
+});
+const context = await model.createEmbeddingContext({contextSize: 8192});
+
+const textEmbedding = await context.getEmbeddingFor("A person walks beside the sea.");
+
+console.log(textEmbedding.vector.length);
+```
+
+`getEmbeddingForMultimodal` accepts ordered `text`, `image`, `audio`, and `video` parts. Audio files can be WAV, MP3, or FLAC. Video is decoded by llama.cpp with `ffmpeg` and `ffprobe`; the default sample rate is one frame per second. Keep the same model and projector for embeddings that you compare.
+
+Pooled multimodal embeddings evaluate the complete input in one batch so every text and media part contributes to the vector. Set `batchSize` and `contextSize` large enough for the whole input (for example, `8192` for EmbeddingGemma 2), and split long recordings into short clips. Inputs that exceed these limits are rejected before decoding. You can pass `{signal}` as the second argument to `getEmbeddingForMultimodal` to cancel before or after native evaluation.
+
+The native build must include a llama.cpp revision with `gemma-embedding2` support and mtmd. The tested revision is `4f92965a7bfa9e8eb6519908ff962e23c2cb7b93`. Keep development models in `test_models` and media fixtures in `assets`; no model downloads are performed by the tests.
+
 ## Reranking Documents {#reranking}
 After you search for the most similar documents using embedding vectors,
 you can use inference to rerank (sort) the documents based on their relevance to the given query.

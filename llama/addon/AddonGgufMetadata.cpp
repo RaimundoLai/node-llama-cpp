@@ -8,7 +8,6 @@
 #include "gguf.h"
 #include "llama.h"
 
-
 static constexpr const char* kGgufSplitNoKey = "split.no";
 static constexpr const char* kGgufSplitCountKey = "split.count";
 static constexpr const char* kGgufSplitTensorsCountKey = "split.tensors.count";

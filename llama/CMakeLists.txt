@@ -112,12 +112,20 @@ endif()
 add_subdirectory("llama.cpp")
 include_directories("llama.cpp")
 include_directories("./llama.cpp/common")
+if (NOT DEFINED LLAMA_INSTALL_VERSION)
+    set(LLAMA_INSTALL_VERSION "0.0.1")
+endif()
+if (NOT TARGET mtmd)
+    add_subdirectory("./llama.cpp/tools/mtmd" "mtmd_build" EXCLUDE_FROM_ALL)
+endif()
+include_directories("./llama.cpp/tools/mtmd")
 
 # This is needed to use methods in "llama-grammar.h" and "unicode.h"
 target_include_directories(llama PUBLIC "./llama.cpp/src")
 
 addVariantSuffix(llama "${NLC_VARIANT}")
 addVariantSuffix(ggml "${NLC_VARIANT}")
+addVariantSuffix(mtmd "${NLC_VARIANT}")
 
 file(GLOB SOURCE_FILES "addon/*.cpp" "addon/**/*.cpp")
 
@@ -126,6 +134,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
 target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 target_link_libraries(${PROJECT_NAME} "llama")
 target_link_libraries(${PROJECT_NAME} "llama-common")
+target_link_libraries(${PROJECT_NAME} "mtmd")
 
 if (GGML_VULKAN)
     find_package(Vulkan REQUIRED)

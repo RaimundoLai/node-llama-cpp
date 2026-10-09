@@ -4,6 +4,7 @@ import {LlamaText} from "../utils/LlamaText.js";
 import {tokenizeInput} from "../utils/tokenizeInput.js";
 import {resolveBeginningTokenToPrepend, resolveEndTokenToAppend} from "../utils/tokenizerUtils.js";
 import {LlamaEmbedding} from "./LlamaEmbedding.js";
+import type {LlamaMultimodalMediaInputPart} from "./LlamaMultimodal.js";
 import type {LlamaModel} from "./LlamaModel/LlamaModel.js";
 import type {LlamaContext, LlamaContextSequence} from "./LlamaContext/LlamaContext.js";
 
@@ -112,6 +113,38 @@ export class LlamaEmbeddingContext {
         });
     }
 
+    /**
+     * Calculate an embedding from ordered text, image, audio, and video parts.
+     * Call `model.loadMultimodal({mmprojPath})` before using this method.
+     */
+    public async getEmbeddingForMultimodal(
+        parts: readonly LlamaMultimodalMediaInputPart[],
+        {signal}: {signal?: AbortSignal} = {}
+    ) {
+        signal?.throwIfAborted();
+        const multimodal = this.model.multimodal;
+        if (multimodal == null)
+            throw new Error("No multimodal projector is loaded. Call 'model.loadMultimodal({mmprojPath})' first.");
+
+        return await withLock([this as LlamaEmbeddingContext, "evaluate"], async () => {
+            const {tokensCount} = await multimodal.evaluatePromptWithMedia({
+                contextSequence: this._sequence,
+                parts,
+                clearSequence: true,
+                signal
+            });
+            signal?.throwIfAborted();
+
+            const embeddingVector = tokensCount === 0
+                ? []
+                : Array.from(this._llamaContext._ctx.getEmbedding(tokensCount));
+
+            return new LlamaEmbedding({
+                vector: embeddingVector
+            });
+        });
+    }
+
     /** Calculate the evaluation tokens length for a given input so you can determine whether it fits in the context size */
     public calculateInputLength(input: Token[] | string | LlamaText) {
         const resolvedInput = tokenizeInput(input, this._llamaContext.model.tokenizer, undefined, true);
@@ -165,7 +198,11 @@ export class LlamaEmbeddingContext {
 
         const llamaContext = await _model.createContext({
             contextSize,
-            batchSize,
+            batchSize: batchSize ?? (_model.multimodal == null
+                ? undefined
+                : Math.min(8192, typeof contextSize === "number"
+                    ? contextSize
+                    : (typeof contextSize === "object" ? contextSize.max : undefined) ?? _model.trainContextSize)),
             threads,
             createSignal,
             ignoreMemorySafetyChecks,
