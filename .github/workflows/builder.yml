@@ -5,6 +5,10 @@ on:
   push:
     branches: [ builder ]
 
+env:
+  # Version written into the packed npm package; consumers pin patches to it
+  NPM_PACKAGE_VERSION: "3.20.0"
+
 jobs:
   # =================================================================================================
   # 1. Prepare phase: Build JS and download llama.cpp source once to avoid rate limits
@@ -12,10 +16,17 @@ jobs:
   prepare-source:
     name: Prepare Source
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: dev
+
+      - name: Record source commit
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -48,6 +59,24 @@ jobs:
             llama/llama.cpp.info.json
             llama/llama.cpp
             llama/gitRelease.bundle
+
+      # Same layout as the upstream npm release: only grammars from the llama.cpp source,
+      # "postinstall" restored, and optional binary modules pinned to the package version
+      - name: Pack npm package
+        run: |
+          cp -r llama/llama.cpp/grammars llama/grammars
+          rm -rf llama/llama.cpp
+          rm -f templates/package.json templates/package-lock.json
+          npm version "$NPM_PACKAGE_VERSION" --no-git-tag-version
+          npm run addPostinstallScript
+          npm pack
+          ls -l "node-llama-cpp-$NPM_PACKAGE_VERSION.tgz"
+
+      - name: Upload npm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: node-llama-cpp-${{ env.NPM_PACKAGE_VERSION }}.tgz
 
   # =================================================================================================
   # 2. Matrix build phase: Native C++ compilation using the source from the prepare phase
@@ -108,7 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: ${{ needs.prepare-source.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -223,7 +252,7 @@ jobs:
   # 3. Release phase: Collect all artifacts and create a GitHub Release
   # =================================================================================================
   create-release:
-    needs: build-binaries
+    needs: [prepare-source, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - name: Download all binary artifacts
@@ -239,11 +268,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ steps.date.outputs.date }}
+          target_commitish: ${{ needs.prepare-source.outputs.sha }}
           name: node-llama-cpp builds (${{ steps.date.outputs.date }})
           body: |
             Streamlined node-llama-cpp addons (contains only .node, .dll, .so, .dylib)
+            npm package: node-llama-cpp-${{ env.NPM_PACKAGE_VERSION }}.tgz
+            Source commit: ${{ needs.prepare-source.outputs.sha }}
             Build date: ${{ steps.date.outputs.date }}
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tgz
           draft: false
           prerelease: false
         env:
